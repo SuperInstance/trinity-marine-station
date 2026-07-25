@@ -1,8 +1,8 @@
 {
   "name": "trinity-marine-station",
-  "version": "0.5.0-phase4",
+  "version": "0.5.1-phase4.5",
   "private": true,
-  "description": "Next-generation, agentic-first marine navigation station. JEPA world model + conscious narrator (Ollama or OpenAI-compatible cloud) + Signal K + vessel-agent telemetry + A2A frontend mutations. Cognitive-layer sibling of SuperInstance/vessel-agent.",
+  "description": "Next-generation, agentic-first marine navigation station. JEPA world model + conscious narrator (Ollama or OpenAI-compatible cloud) + Signal K + vessel-agent telemetry + A2A frontend mutations + JSONL audit log. Cognitive-layer sibling of SuperInstance/vessel-agent.",
   "scripts": {
     "streamer":     "node backend/mockSignalK.js",
     "ingest":       "node backend/telemetryIngest.js",
@@ -24,6 +24,7 @@
     "test:health":       "node tests/healthCheck.test.js",
     "test:h3":           "node tests/h3.test.js",
     "test:vessel":       "node tests/vesselAgentAdapter.test.js",
+    "test:a2alog":       "node tests/a2aLog.test.js",
     "test":              "node tests/run.js"
   },
   "engines": {

@@ -18,3 +18,6 @@ build/
 
 # Research corpus (downloaded docs for synthesis, not source code)
 .research/
+
+# Runtime artifacts (the A2A audit log writes here by default)
+logs/

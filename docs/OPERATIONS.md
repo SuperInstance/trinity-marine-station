@@ -120,6 +120,9 @@ and by `npm run test:daemon` so the test suite works in CI without a GPU.
 | `RING_CAPACITY`           | `256`                  | Frames retained in the sensory ring buffer (~128 s).     |
 | `OPS_HOST`                | `127.0.0.1`            | Bind address for the ops HTTP server.                    |
 | `OPS_PORT`                | `3001`                 | Port for `/health` and `/status`.                        |
+| `A2A_LOG_DIR`             | `./logs/a2a`           | Directory for the A2A audit log (JSONL). Auto-created.   |
+| `A2A_LOG_MAX_BYTES`       | `10485760` (10 MB)     | Rotate the active log file when it exceeds this size.    |
+| `A2A_LOG_DISABLED`        | `false`                | Set `1` to disable the audit log (ephemeral tests).      |
 
 ---
 
@@ -155,8 +158,9 @@ order:
 1. `core.stop()` — halts the 500 ms loop and aborts any in-flight LLM gen.
 2. `narrator.destroy()` — marks the narrator as destroyed.
 3. `ingest.disconnect()` — sets the user-closed flag and clears reconnect timers.
-4. `stopOpsServer(opsServer)` — closes the HTTP listener.
-5. `stopStreamer()` (only if embedded) — SIGTERM with a 2 s SIGKILL escalation.
+4. `a2aLog.destroy()` — flushes any pending A2A audit writes to disk before exit.
+5. `stopOpsServer(opsServer)` — closes the HTTP listener.
+6. `stopStreamer()` (only if embedded) — SIGTERM with a 2 s SIGKILL escalation.
 
 If anything in that chain throws, the daemon exits with code 1 and the error
 is logged at `[ERR]`. Otherwise it logs `[LIFE] shutdown complete` and exits 0.
@@ -255,5 +259,6 @@ hooks to add request logging, metrics, etc. are all already in
 | Narrator text is empty / malformed       | `backend/llmNarrator.js`        |
 | Cloud LLM isn't being used               | `backend/llmBackends.js`        |
 | `<a2a>` blocks aren't reaching the UI    | `backend/trinityDaemon.js` event log |
+| A2A audit log missing or wrong shape     | `backend/a2aLog.js`             |
 | Vector store returns wrong chunks        | `backend/vectorStore.js`        |
 | Tests fail / flake                       | `docs/TESTING.md`               |

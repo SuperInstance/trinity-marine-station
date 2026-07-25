@@ -62,6 +62,7 @@
 | **AI**   | `backend/schemas.js` | Single source of truth: validates `TrinityFrame`, `A2AAction`, `JepaEnergyReading`, `FeatureVector`, `VesselAnchor`. |
 | **AI**   | `backend/circuitBreaker.js` | Three-state (closed/open/half-open) breaker around the LLM backend, with `execStream` for async iterators. |
 | **AI**   | `backend/healthCheck.js` | Probe runner + status aggregator for the daemon's `/health` endpoint. |
+| **AI**   | `backend/a2aLog.js` | Append-only JSONL audit log for every emitted A2A mutation. Batched writes, size-based rotation, replay across files. |
 | **Data** | `backend/h3.js` | Lightweight H3-style spatial indexer (drop-in compatible with `h3-js`). |
 | **Data** | `backend/vesselAgentAdapter.js` | Anti-corruption layer: normalizes Signal K + vessel-agent `core_anchor` JSON into a canonical `TrinityFrame`. |
 | **Test** | `tests/pipeline.test.js` | End-to-end Phase 1 verification (streamer + ingest + ring buffer). |
@@ -75,6 +76,7 @@
 | **Test** | `tests/healthCheck.test.js` | Probe runner, status aggregator, timeout bounds. |
 | **Test** | `tests/h3.test.js` | H3 encoding determinism, locality, dateline wrap, haversine accuracy. |
 | **Test** | `tests/vesselAgentAdapter.test.js` | Signal K + vessel-agent normalization, schema round-trip, rejection paths. |
+| **Test** | `tests/a2aLog.test.js` | JSONL audit log: append, batching, rotation, replay, corruption tolerance, concurrency. |
 | **Test** | `tests/run.js` | Unified runner that discovers every `*.test.js`, aggregates exit codes, never lets a stray stderr line fail `npm test`. |
 
 ---
@@ -225,6 +227,51 @@ const backend = new OpenAiCompatibleBackend({
   model:   "gpt-4o-mini",
 });
 ```
+
+---
+
+## A2A audit log
+
+Every validated `<a2a>` mutation emitted by the narrator is persisted to a
+JSONL audit log. This gives us:
+
+- **Replay**: read the last N actions from `replay()` to put recent history into the narrator's prompt.
+- **Audit**: a permanent record of every workspace mutation (the bridge can re-derive the timeline).
+- **Crash safety**: append-only writes are O(1) and never rewrite in place.
+
+The log is wired into the daemon automatically — no caller code required:
+
+```js
+// backend/trinityDaemon.js
+core.on("a2a", (action) => {
+  log(TAG_A2A, "mutation", { action: action.action, priority: action.priority });
+  if (a2aLog) a2aLog.append(action);   // <-- persists with _loggedAt + _seq
+});
+```
+
+**Configuration** (env vars):
+
+| Var | Default | Purpose |
+|---|---|---|
+| `A2A_LOG_DIR` | `./logs/a2a` | Where the JSONL files live. Auto-created. |
+| `A2A_LOG_MAX_BYTES` | `10 MB` | Rotate the active file when it exceeds this size. |
+| `A2A_LOG_DISABLED` | `false` | Set to `1` to skip persistence (ephemeral tests). |
+
+**Replay into the narrator context** (when you want it):
+
+```js
+const recent = await a2aLog.replay({ limit: 10 });
+// → [{ action: "morph_to_hazard_mode", priority: 0.98, _loggedAt: "...", _seq: 1 }, ...]
+```
+
+**File naming convention** (kebab-case ISO timestamps, Windows-safe):
+
+```
+logs/a2a/a2a-2026-07-25T18-00-00-000Z.jsonl
+logs/a2a/a2a-2026-07-25T18-15-22-123Z.jsonl    ← rotated when the active file exceeded maxBytes
+```
+
+The daemon flushes & destroys the log on `SIGINT`/`SIGTERM`, so no in-flight mutations are lost.
 
 ---
 

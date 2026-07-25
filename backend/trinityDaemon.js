@@ -62,6 +62,9 @@ const {
   EmbeddingRetriever,
 } = require("./vectorStore");
 const {
+  A2aLog,
+} = require("./a2aLog");
+const {
   STREAMER_HOST,
   STREAMER_PORT,
 } = require("./marineConstants");
@@ -127,6 +130,11 @@ function loadConfig(env = process.env) {
     // Ops HTTP
     opsHost: env.OPS_HOST ?? DEFAULT_OPS_HOST,
     opsPort: env.OPS_PORT ? Number(env.OPS_PORT) : DEFAULT_OPS_PORT,
+
+    // A2A audit log
+    a2aLogDir:       env.A2A_LOG_DIR ?? "./logs/a2a",
+    a2aLogMaxBytes:  env.A2A_LOG_MAX_BYTES ? Number(env.A2A_LOG_MAX_BYTES) : undefined,
+    a2aLogDisabled:  env.A2A_LOG_DISABLED === "1" || env.A2A_LOG_DISABLED === "true",
   };
 
   // Source description (used in startup banner)
@@ -284,6 +292,14 @@ async function buildTrinity(cfg) {
     intervalMs: 500,
   });
 
+  // A2A audit log — persists every emitted workspace mutation. Writes are
+  // batched (~100ms) and rotated by size, so the cost is negligible even at
+  // high anomaly rates. Disable with A2A_LOG_DISABLED=1 for ephemeral tests.
+  const a2aLog = cfg.a2aLogDisabled ? null : new A2aLog({
+    dir: cfg.a2aLogDir,
+    ...(cfg.a2aLogMaxBytes ? { maxBytes: cfg.a2aLogMaxBytes } : {}),
+  });
+
   // ---------- event wiring ----------
   const frameBuffer = { last: null };
   ingest.on("open",      () => log(TAG_LIFECYCLE, "ingest open", { url: cfg.signalKUrl }));
@@ -328,6 +344,13 @@ async function buildTrinity(cfg) {
       priority: action.priority,
       reason: action.reason,
     });
+    // Persist every validated mutation to the audit log. The log augments
+    // the record with _loggedAt + _seq, so we don't lose the original priority.
+    if (a2aLog) {
+      a2aLog.append(action).catch((err) => {
+        log(TAG_ERR, "a2a log append failed", { error: err?.message ?? String(err) });
+      });
+    }
   });
   core.on("malformed",({ raw, error }) => {
     log(TAG_ERR, "malformed A2A", { error, raw: raw.slice(0, 120) });
@@ -340,7 +363,7 @@ async function buildTrinity(cfg) {
   });
 
   return {
-    backend, ingest, jepa, narrator, core, retriever, store,
+    backend, ingest, jepa, narrator, core, retriever, store, a2aLog,
     ringBuffer: ingest.buffer,
     frameBuffer,
     snapshot: () => ({
@@ -357,6 +380,7 @@ async function buildTrinity(cfg) {
       narrator: narrator.stats,
       core:     core.stats,
       retriever: { size: retriever.size },
+      a2aLog:   a2aLog ? a2aLog.stats() : { disabled: true },
       lastFrame: frameBuffer.last,
     }),
   };
@@ -417,6 +441,9 @@ async function main() {
       t.core.stop();
       t.narrator.destroy();
       t.ingest.disconnect();
+      // Flush the A2A audit log BEFORE we tear anything else down so any
+      // in-flight mutation that's still pending a write gets durably saved.
+      if (t.a2aLog) await t.a2aLog.destroy();
       await stopOpsServer(opsServer);
       if (cfg.streamerEmbed) await stopStreamer();
       log(TAG_LIFECYCLE, "shutdown complete");

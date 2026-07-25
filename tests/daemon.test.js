@@ -19,7 +19,9 @@
  */
 
 const assert = require("node:assert/strict");
+const fs = require("fs");
 const http = require("http");
+const os = require("os");
 const { spawn } = require("child_process");
 const path = require("path");
 
@@ -27,6 +29,9 @@ const path = require("path");
 process.env.MOCK_LLM = "1";
 process.env.STREAMER_EMBED = "false";
 process.env.NARRATOR_INTERVAL_MS = "200";
+
+// Use a per-test temp dir for the A2A audit log so we don't pollute ./logs/a2a.
+const A2A_LOG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "trinity-daemon-a2a-"));
 
 const { loadConfig, buildTrinity } = require("../backend/trinityDaemon");
 
@@ -90,6 +95,8 @@ function get(port, p) {
     SIGNAL_K_URL: "ws://127.0.0.1:3000",
     NARRATOR_INTERVAL_MS: "200",
     ANOMALY_THRESHOLD: "0.5", // high enough to ignore natural drift
+    A2A_LOG_DIR,
+    A2A_LOG_MAX_BYTES: "100000", // small so we exercise rotation if needed
   });
 
   const t = await buildTrinity(cfg);
@@ -184,7 +191,36 @@ function get(port, p) {
     assert.ok(r.body.core,      "missing core");
     assert.ok(r.body.retriever, "missing retriever");
     assert.ok(r.body.lastFrame, "missing lastFrame");
+    assert.ok(r.body.a2aLog,    "missing a2aLog");
     assert.equal(typeof r.body.ts, "number");
+  });
+
+  // ---- TEST 4b: A2A audit log captured the emitted action ----
+  await test("A2A audit log persisted the emergency mutation", async () => {
+    // The A2aLog batches writes within ~100ms, then auto-flushes on append
+    // if the queue settles. Give it a moment.
+    await new Promise((r) => setTimeout(r, 200));
+    await t.a2aLog.flush();
+
+    const files = fs.readdirSync(A2A_LOG_DIR).filter((f) => f.endsWith(".jsonl"));
+    assert.ok(files.length >= 1, `expected at least 1 log file, got ${files.length}`);
+
+    let found = null;
+    for (const f of files) {
+      const content = fs.readFileSync(path.join(A2A_LOG_DIR, f), "utf8");
+      for (const line of content.split("\n")) {
+        if (!line) continue;
+        const rec = JSON.parse(line);
+        if (rec.action === "morph_to_hazard_mode") { found = rec; break; }
+      }
+      if (found) break;
+    }
+    assert.ok(found, "morph_to_hazard_mode action not found in audit log");
+    assert.equal(found.action, "morph_to_hazard_mode");
+    assert.ok(typeof found.priority === "number", "priority is a number");
+    assert.ok(found.priority >= 0.95, `priority >= 0.95 (got ${found.priority})`);
+    assert.ok(typeof found._loggedAt === "string", "_loggedAt present");
+    assert.ok(typeof found._seq === "number", "_seq present");
   });
 
   // ---- TEST 5: shutdown chain is wired (manual teardown) ----
@@ -200,6 +236,8 @@ function get(port, p) {
   await new Promise((r) => opsSrv.close(r));
   streamer.kill("SIGTERM");
   await new Promise((r) => setTimeout(r, 200));
+  // Remove the temp A2A log dir so we don't litter /tmp.
+  try { fs.rmSync(A2A_LOG_DIR, { recursive: true, force: true }); } catch {}
 
   // ---- summary ----
   console.log("---");
