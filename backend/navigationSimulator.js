@@ -2,12 +2,19 @@
  * backend/navigationSimulator.js
  * ----------------------------------------------------------------------------
  * Pure stateful simulator for a vessel moving along a predefined coastline
- * trajectory. It knows NOTHING about WebSockets, JSON, or Signal K — it just
- * advances an internal world model and produces a snapshot on demand.
+ * trajectory.
+ *
+ * Knows NOTHING about WebSockets, JSON, or Signal K — it just advances an
+ * internal world model and produces a snapshot on demand.
  *
  * This separation matters for the Trinity architecture: the same simulator
  * will later be embedded into the cognitive engine's JEPA world-model during
  * Phase 2 for replay / prediction tasks.
+ *
+ * @example
+ *   const sim = new NavigationSimulator();
+ *   const snap = sim.tick(500);                  // advance by 500 ms
+ *   const vec = sim.featureVector(scratchBuf);   // write into caller's typed array
  * ----------------------------------------------------------------------------
  */
 

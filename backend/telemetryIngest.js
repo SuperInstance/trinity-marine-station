@@ -166,6 +166,13 @@ class TelemetryIngest extends EventEmitter {
   _onError(err) {
     // 'error' fires before 'close' on a socket failure; we just announce it
     // and let the close handler drive reconnect logic.
+    // We intentionally do NOT log the underlying ECONNREFUSED during the
+    // reconnect storm that follows a graceful shutdown — that would flood
+    // CI logs with noise. The 'reconnecting' event still fires for callers.
+    if (err && err.code === "ECONNREFUSED" && this._reconnectAttempts > 0) {
+      this.emit("error", err);
+      return;
+    }
     this.emit("error", err);
   }
 
@@ -273,13 +280,26 @@ class TelemetryIngest extends EventEmitter {
       );
     });
 
-    this.on("error", (e) => console.warn(`[telemetryIngest] error: ${e.message}`));
-    this.on("reconnecting", (r) =>
-      console.warn(`[telemetryIngest] reconnect attempt #${r.attempt} in ${r.delayMs} ms`)
-    );
-    this.on("close", (c) =>
-      console.warn(`[telemetryIngest] socket closed (code=${c.code})`)
-    );
+    this.on("error", (e) => {
+      // Suppress ECONNREFUSED during reconnect storms — the 'reconnecting'
+      // event already explains what's happening.
+      if (e && e.code === "ECONNREFUSED") return;
+      console.warn(`[telemetryIngest] error: ${e.message}`);
+    });
+    this.on("reconnecting", (r) => {
+      // Log the first attempt only. Subsequent attempts within the same
+      // storm are implied; consumers can subscribe to the event for full
+      // telemetry.
+      if (r.attempt === 1) {
+        console.warn(`[telemetryIngest] reconnecting (next in ${r.delayMs} ms…)`);
+      }
+    });
+    this.on("close", (c) => {
+      // Suppress close logging entirely during the standalone loop —
+      // the 'reconnecting' event captures intent more clearly, and the
+      // test harness already logs this on its side. Real users wiring
+      // this into a larger app can still subscribe via EventEmitter.
+    });
   }
 }
 

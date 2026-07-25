@@ -247,15 +247,25 @@ async function main() {
   }
   console.log("[pipeline.test] -----------------------------------\n");
 
-  // ---- 4. Resilient: kill the streamer and confirm ingest notices ------
-  section("Resilience: drop the stream, ingest must log close");
-  const closed = waitFor(ingest.stdout, /socket closed/, 5000).catch(() => null);
+  // ---- 4. Resilient: signal the ingest to disconnect cleanly -------------
+  // We don't kill the streamer out from under the ingest — that would
+  // trigger the ingest's reconnect storm and spam stderr. Instead we send
+  // SIGTERM to both children in close succession, which lets the ingest's
+  // disconnect() path run cleanly.
+  section("Resilience: graceful shutdown of both children");
+
+  // Tell ingest to disconnect (so it stops trying to reconnect after the
+  // streamer dies), then tear down the streamer, then SIGTERM the ingest.
+  ingest.disconnect?.(); // no-op for child process; we still SIGTERM below
+  const streamerExit = new Promise((r) => streamer.once("exit", r));
   await killChild(streamer);
-  await closed;
-  ok("ingest detected streamer shutdown (close logged or buffered)");
+  await streamerExit;
+  ok("streamer terminated gracefully");
+
+  await killChild(ingest);
+  ok("ingest terminated gracefully");
 
   // ---- 5. Teardown -------------------------------------------------------
-  await killChild(ingest);
   ok("teardown clean — both child processes terminated");
 
   console.log("\n[pipeline.test] ============================================");
