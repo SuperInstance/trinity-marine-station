@@ -1,13 +1,16 @@
 {
   "name": "trinity-marine-station",
-  "version": "0.1.0-phase1",
+  "version": "0.2.0-phase3",
   "private": true,
-  "description": "Next-generation, agentic-first marine navigation station. Phase 1: Sensory Ingestion Foundation.",
+  "description": "Next-generation, agentic-first marine navigation station. JEPA world model + conscious narrator (Ollama) + Signal K telemetry + A2A frontend mutations.",
   "scripts": {
-    "streamer": "node backend/mockSignalK.js",
-    "ingest": "node backend/telemetryIngest.js",
-    "test:pipeline": "node tests/run.js",
-    "test": "node tests/run.js"
+    "streamer":      "node backend/mockSignalK.js",
+    "ingest":        "node backend/telemetryIngest.js",
+    "narrator":      "node backend/llmNarrator.js",
+    "test:pipeline": "node tests/pipeline.test.js",
+    "test:lifecycle":"node tests/trinityLifecycle.test.js",
+    "test:ollama":   "node tests/ollama.smoke.test.js",
+    "test":          "node tests/run.js"
   },
   "engines": {
     "node": ">=18.0.0"

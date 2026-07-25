@@ -250,19 +250,33 @@ async function main() {
   // ---- 4. Resilient: signal the ingest to disconnect cleanly -------------
   // We don't kill the streamer out from under the ingest — that would
   // trigger the ingest's reconnect storm and spam stderr. Instead we send
-  // SIGTERM to both children in close succession, which lets the ingest's
-  // disconnect() path run cleanly.
+  // SIGINT to the ingest first (which its standalone entry handles by
+  // calling disconnect()), give it a moment to close its WS, then kill the
+  // streamer, and finally SIGTERM the ingest if it hasn't exited yet.
   section("Resilience: graceful shutdown of both children");
 
-  // Tell ingest to disconnect (so it stops trying to reconnect after the
-  // streamer dies), then tear down the streamer, then SIGTERM the ingest.
-  ingest.disconnect?.(); // no-op for child process; we still SIGTERM below
+  // 1. Tell the ingest to stop. Its standalone handler runs disconnect()
+  //    and then process.exit(0) after 250ms.
+  const ingestExit = new Promise((r) => ingest.once("exit", r));
+  try { ingest.kill("SIGINT"); } catch {}
+
+  // 2. Give the ingest ~300ms to close its WS. During this window its
+  //    _onClose handler sees _closedByUser=true and bails out without
+  //    scheduling a reconnect. No "reconnecting" log line is emitted.
+  await new Promise((r) => setTimeout(r, 300));
+
+  // 3. Now the streamer is harmless to kill — no live clients attached.
   const streamerExit = new Promise((r) => streamer.once("exit", r));
-  await killChild(streamer);
+  try { streamer.kill("SIGTERM"); } catch {}
   await streamerExit;
   ok("streamer terminated gracefully");
 
-  await killChild(ingest);
+  // 4. If the ingest hasn't already exited from its own SIGINT handler,
+  //    force-stop it.
+  if (ingest.exitCode === null && !ingest.killed) {
+    await killChild(ingest);
+  }
+  await ingestExit;
   ok("ingest terminated gracefully");
 
   // ---- 5. Teardown -------------------------------------------------------

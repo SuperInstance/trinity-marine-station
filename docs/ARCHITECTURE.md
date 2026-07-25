@@ -209,4 +209,90 @@ These are intentionally absent because they belong to later phases:
 | `TelemetryRingBuffer.snapshot(n)` | The JEPA encoder samples windows of historical frames for supervised prediction loss. |
 | `TelemetryIngest.on('frame', vec)` | The embedding memory module subscribes here to maintain a vector-index of "scenes". |
 | `NavigationSimulator.tick()` | The JEPA world-model rolls out hypothetical trajectories to compare against actual observed frames. |
-| `TelemetryIngest.stats` | The LLM narrator consults these to write "stream-of-consciousness" markdown updates for the bridge display. |
+| `TelemetryIngest.stats` | The LLM narrator consults these to write "stream-of-consciousness" markdown updates for the bridge display. |---
+
+# Phase 3 Architecture — The Conscious Narrator + JEPA
+
+> **Added in v0.2.0.** Phase 1 (sensory ingestion) is unchanged. This section documents the cognitive engine that reads from Phase 1's ring buffer and emits A2A mutations for the future Theia frontend.
+
+## Why a JEPA + LLM pair?
+
+Yann LeCun's JEPA architecture argues for a *world model* that operates in embedding space, predicting future latent states from past ones, with a small LLM only synthesizing the result as natural language. We follow that recipe:
+
+- **JepaWorldModel** — a linear predictor over 6-D feature vectors. Cheap (one matrix multiply per tick). Emits an *energy score* (prediction error normalized to [0,1]). Energy > 0.5 = anomaly.
+- **LlmNarrator** — only asks the LLM when there's something to say. Normal-mode is throttled to 4 s; anomaly-mode fires immediately and aborts any in-flight generation.
+- **LlmBackend** interface — today backed by `HttpLlmBackend` (Ollama at 127.0.0.1:11434). Tomorrow, swap in any OpenAI-compatible service with zero changes to the narrator.
+
+## The conscious narrator (`backend/llmNarrator.js`)
+
+### Stream splitter
+
+The narrator doesn't try to constrain the LLM via grammar or function-calling. Instead it streams freely and *peels* the output as it arrives:
+
+- Anything outside `<a2a>...</a2a>` is **prose** (markdown for the bridge display).
+- Anything inside is held until the closing tag, then JSON.parse'd and validated against an allow-list of action names.
+- The splitter is allocation-light: a small `tail` buffer prevents tags from being split across chunks.
+
+### Emergency mode
+
+When `TrinityCore` sees an anomaly it calls `narrator.forceEmergency(ctx)` which:
+
+1. Aborts any in-flight normal generation (5 ms grace).
+2. Issues a new request with `EMERGENCY_SYSTEM_PROMPT` (different from the default).
+3. Forces a 200-token budget and `think: false` so reasoning models (qwen3, deepseek-r1) return the answer directly instead of spending the budget on internal monologue.
+
+### The `<a2a>` schema
+
+```json
+{
+  "action":  "morph_to_hazard_mode",
+  "payload": { "id": "hazard-console" },
+  "reason":  "depth plunge to 1.2 m",
+  "priority": 0.98
+}
+```
+
+Allowed actions (allow-list in `ALLOWED_ACTIONS`):
+
+- `morph_to_hazard_mode` / `morph_to_navigation_mode` / `morph_to_engineering_mode` — switch the Theia workspace layout.
+- `highlight_waypoint` — focus a chart marker.
+- `raise_alert` / `clear_alerts` — manage notification stack.
+- `set_panel_focus` — open a specific panel by id.
+- `announce` — voice/TTS output.
+
+## The JEPA world model (`backend/jepaWorldModel.js`)
+
+A deliberately tiny model: a 6×6 linear transform + EMA-updated identity. Each tick it predicts the next feature vector from the previous one and computes the L2 distance to the observed vector, normalized into [0,1] by a running max-distance estimate.
+
+This is enough to flag "something changed faster than expected" without any training. Future phases will swap the linear predictor for a proper JEPA encoder (probably a small transformer trained on recorded telemetry) and replace the energy score with the encoder's prediction error in embedding space.
+
+## The orchestrator (`backend/trinityCore.js`)
+
+```js
+setInterval(() => {
+  const vec = ringBuffer.latest();
+  const energy = jepa.observe(vec);
+  if (energy.anomaly) narrator.forceEmergency({ featureVector: vec, energy, retrieved: [] });
+  else                narrator.maybeGenerate({ featureVector: vec, energy, retrieved: [] });
+}, 500);
+```
+
+Pulls the latest frame from the ring buffer every 500 ms, runs it through JEPA, and branches. `peacefulCount` and `emergencyCount` stats are exposed on the instance for the test harness.
+
+## LLM backend swapping
+
+The narrator depends only on the `LlmBackend` interface. To move from local Ollama to a cloud provider, write a `class OpenAiCompatibleBackend` that implements `generate/embed/listModels/dispose` and pass it to `new LlmNarrator({ backend })`. The narrator, splitter, parser, and orchestrator are unchanged.
+
+## Verified end-to-end
+
+```
+[run.js] running 3 test file(s):
+[run.js]   • ollama.smoke.test.js
+[run.js]   • pipeline.test.js
+[run.js]   • trinityLifecycle.test.js
+
+[ollama.smoke]      ✅ OLLAMA SMOKE TEST PASSED   (real qwen3:4b + nomic-embed-text)
+[pipeline]          ✅ PHASE 1 PIPELINE VERIFIED  (11 checks)
+[trinityLifecycle]  9 pass / 0 fail               (static driver + live WS)
+[run.js]            ✅ ALL TESTS PASSED
+```
