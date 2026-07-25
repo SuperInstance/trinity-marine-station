@@ -1,16 +1,25 @@
 {
   "name": "trinity-marine-station",
-  "version": "0.2.0-phase3",
+  "version": "0.4.0-phase3.5",
   "private": true,
-  "description": "Next-generation, agentic-first marine navigation station. JEPA world model + conscious narrator (Ollama) + Signal K telemetry + A2A frontend mutations.",
+  "description": "Next-generation, agentic-first marine navigation station. JEPA world model + conscious narrator (Ollama or OpenAI-compatible cloud) + Signal K telemetry + A2A frontend mutations.",
   "scripts": {
-    "streamer":      "node backend/mockSignalK.js",
-    "ingest":        "node backend/telemetryIngest.js",
-    "narrator":      "node backend/llmNarrator.js",
-    "test:pipeline": "node tests/pipeline.test.js",
-    "test:lifecycle":"node tests/trinityLifecycle.test.js",
-    "test:ollama":   "node tests/ollama.smoke.test.js",
-    "test":          "node tests/run.js"
+    "streamer":     "node backend/mockSignalK.js",
+    "ingest":       "node backend/telemetryIngest.js",
+    "narrator":     "node backend/llmNarrator.js",
+    "daemon":       "node backend/trinityDaemon.js",
+    "start":        "node backend/trinityDaemon.js",
+    "dev":          "node --watch backend/trinityDaemon.js",
+    "status":       "node -e \"require('http').get('http://127.0.0.1:3001/status',r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)))})\"",
+    "health":       "node -e \"require('http').get('http://127.0.0.1:3001/health',r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>console.log(d))})\"",
+    "lint":         "node tools/lint.js",
+    "test:pipeline":  "node tests/pipeline.test.js",
+    "test:lifecycle": "node tests/trinityLifecycle.test.js",
+    "test:ollama":    "node tests/ollama.smoke.test.js",
+    "test:vector":    "node tests/vectorStore.test.js",
+    "test:daemon":    "node tests/daemon.test.js",
+    "test:openai":    "node tests/openai.smoke.test.js",
+    "test":           "node tests/run.js"
   },
   "engines": {
     "node": ">=18.0.0"

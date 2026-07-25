@@ -3,25 +3,31 @@
  * ----------------------------------------------------------------------------
  * Pluggable LLM backends for the LlmNarrator.
  *
- * Today: HttpLlmBackend (Ollama). Tomorrow: OpenAiCompatibleBackend (cloud).
+ * Today: HttpLlmBackend (Ollama) and OpenAiCompatibleBackend (cloud).
  * Plus MockLlmBackend for deterministic tests.
  *
  * Every backend implements the same interface:
  *
  *   class LlmBackend {
- *     async generate(req) → AsyncIterable<LlmChunk>
- *     async embed(req)    → EmbeddingResult      // optional
- *     async listModels()  → string[]
- *     async dispose()     → void                 // optional
+ *     async generate(req) -> AsyncIterable<LlmChunk>
+ *     async embed(req)    -> EmbeddingResult      // optional
+ *     async listModels()  -> string[]
+ *     async dispose()     -> void                 // optional
  *   }
  *
- * The narrator consumes the AsyncIterable. We use Node's `Readable.from` /
- * async-generator pattern rather than EventEmitter so cancellation is
- * trivial via AbortSignal.
+ * The narrator consumes the AsyncIterable. We use Node's async-generator
+ * pattern rather than EventEmitter so cancellation is trivial via AbortSignal.
+ *
+ * Pull-and-play mode:
+ *   Set the environment variables CLOUD_LLM_BASE_URL, CLOUD_LLM_API_KEY,
+ *   and CLOUD_LLM_MODEL. The factory createBackend() at the bottom of this
+ *   file will choose OpenAiCompatibleBackend automatically. Leave them unset
+ *   to keep running on local Ollama.
  * ----------------------------------------------------------------------------
  */
 
 const { request } = require("http");
+const { request: httpsRequest } = require("https");
 
 // ===========================================================================
 // HttpLlmBackend — talks to Ollama's /api/generate and /api/embed endpoints.
@@ -56,8 +62,8 @@ class HttpLlmBackend {
    * Cancellation is honoured via req.signal.
    *
    * Options (on `req`):
-   *   - model, system, user, maxTokens, temperature, stop  — passed through
-   *   - think: false                                         — disable CoT
+   *   - model, system, user, maxTokens, temperature, stop  - passed through
+   *   - think: false                                      - disable CoT
    *     on reasoning models (qwen3, deepseek-r1) so the response
    *     doesn't spend its token budget on internal monologue.
    *
@@ -148,6 +154,159 @@ class HttpLlmBackend {
 }
 
 // ===========================================================================
+// OpenAiCompatibleBackend — talks to any OpenAI-shaped /v1/chat/completions
+// endpoint. Works with OpenAI, Together, Groq, Anyscale, OpenRouter, vLLM,
+// LM Studio (in OpenAI mode), llama.cpp's server, etc.
+//
+// Pull-and-play:
+//   Set CLOUD_LLM_BASE_URL, CLOUD_LLM_API_KEY, CLOUD_LLM_MODEL in your env
+//   and createBackend() at the bottom will pick this backend automatically.
+// ===========================================================================
+
+class OpenAiCompatibleBackend {
+  /**
+   * @param {object} opts
+   * @param {string} opts.baseUrl   e.g. "https://api.openai.com"
+   * @param {string} opts.apiKey    Bearer token. May be omitted for local servers.
+   * @param {string} opts.model     e.g. "gpt-4o-mini", "llama-3.1-8b-instant"
+   * @param {string} [opts.path="/v1/chat/completions"]
+   * @param {number} [opts.requestTimeoutMs=30000]
+   */
+  constructor(opts) {
+    if (!opts?.baseUrl) throw new Error("OpenAiCompatibleBackend: baseUrl is required");
+    if (!opts?.model)   throw new Error("OpenAiCompatibleBackend: model is required");
+    this._baseUrl = opts.baseUrl.replace(/\/+$/, "");
+    this._apiKey  = opts.apiKey ?? "";
+    this._model   = opts.model;
+    this._path    = opts.path ?? "/v1/chat/completions";
+    this._timeout = opts.requestTimeoutMs ?? 30_000;
+  }
+
+  /**
+   * Stream a chat completion. SSE format:
+   *   data: {"choices":[{"delta":{"content":"..."}}]}
+   *   data: [DONE]
+   *
+   * @param {LlmGenerateRequest} req
+   */
+  async *generate(req) {
+    const body = {
+      model:       req.model ?? this._model,
+      stream:      true,
+      temperature: req.temperature ?? 0.7,
+      max_tokens:  req.maxTokens   ?? 256,
+    };
+    if (req.stop) body.stop = req.stop;
+    // OpenAI chat format requires a messages array. We translate our
+    // (system, user) shape into that.
+    body.messages = [];
+    if (typeof req.system === "string" && req.system.length > 0) {
+      body.messages.push({ role: "system", content: req.system });
+    }
+    if (typeof req.user === "string" && req.user.length > 0) {
+      body.messages.push({ role: "user", content: req.user });
+    }
+    if (body.messages.length === 0) {
+      throw new Error("OpenAiCompatibleBackend.generate: system or user prompt required");
+    }
+
+    const url = new URL(this._baseUrl + this._path);
+    const isHttps = url.protocol === "https:";
+    const requester = isHttps ? httpsRequest : null;
+
+    const headers = {
+      "content-type": "application/json",
+      "accept": "text/event-stream",
+    };
+    if (this._apiKey) headers["authorization"] = `Bearer ${this._apiKey}`;
+
+    const stream = httpPostSse({
+      host:     url.hostname,
+      port:     url.port ? Number(url.port) : (isHttps ? 443 : 80),
+      path:     url.pathname + url.search,
+      body:     JSON.stringify(body),
+      headers,
+      timeout:  this._timeout,
+      signal:   req.signal,
+      requester,
+    });
+
+    let sentDone = false;
+    for await (const evt of stream) {
+      if (req.signal?.aborted) break;
+      // SSE format: data: <payload>\n\n  (we strip the "data: " prefix)
+      const payload = evt.data;
+      if (payload === "[DONE]") {
+        if (!sentDone) { yield { text: "", done: true, finishReason: "stop" }; sentDone = true; }
+        continue;
+      }
+      let parsed;
+      try { parsed = JSON.parse(payload); }
+      catch { continue; } // ignore malformed lines
+      const delta = parsed.choices?.[0]?.delta;
+      if (delta && typeof delta.content === "string" && delta.content.length > 0) {
+        yield { text: delta.content, done: false, kind: "response" };
+      }
+      const finishReason = parsed.choices?.[0]?.finish_reason;
+      if (finishReason && !sentDone) {
+        yield { text: "", done: true, finishReason };
+        sentDone = true;
+      }
+    }
+  }
+
+  /**
+   * /v1/embeddings. Many OpenAI-compatible hosts expose this; some require
+   * a different path. Override `embedPath` if needed.
+   *
+   * @param {EmbeddingRequest} req
+   */
+  async embed(req) {
+    const url = new URL(this._baseUrl + "/v1/embeddings");
+    const isHttps = url.protocol === "https:";
+    const headers = { "content-type": "application/json" };
+    if (this._apiKey) headers["authorization"] = `Bearer ${this._apiKey}`;
+    const body = {
+      model: req.model ?? this._model,
+      input: req.text,
+    };
+    const json = await httpJsonPost({
+      host:    url.hostname,
+      port:    url.port ? Number(url.port) : (isHttps ? 443 : 80),
+      path:    url.pathname,
+      useHttps: isHttps,
+      headers,
+      body,
+      timeout: this._timeout,
+      signal:  req.signal,
+    });
+    const arr = json.data?.[0]?.embedding ?? [];
+    return { model: body.model, vector: Float32Array.from(arr) };
+  }
+
+  async listModels() {
+    const url = new URL(this._baseUrl + "/v1/models");
+    const isHttps = url.protocol === "https:";
+    const headers = { accept: "application/json" };
+    if (this._apiKey) headers["authorization"] = `Bearer ${this._apiKey}`;
+    const json = await httpJsonGet({
+      host: url.hostname,
+      port: url.port ? Number(url.port) : (isHttps ? 443 : 80),
+      path: url.pathname,
+      useHttps: isHttps,
+      headers,
+      timeout: 5000,
+    });
+    return (json.data ?? []).map((m) => m.id);
+  }
+
+  async dispose() { /* nothing to release */ }
+
+  get model() { return this._model; }
+  get baseUrl() { return this._baseUrl; }
+}
+
+// ===========================================================================
 // MockLlmBackend — deterministic, used by the lifecycle test.
 // Streams tokens from a queue with simulated inter-token latency.
 //
@@ -155,11 +314,9 @@ class HttpLlmBackend {
 //   - this._normalScript   consumed by normal-mode calls
 //   - this._emergencyScript consumed by emergency-mode calls
 //
-// A generation is classified as emergency iff the prompt system string
-// starts with "You are the conscious narrator ... responding to an
-// EMERGENCY event". That's brittle to wording changes; we instead detect
-// emergency mode by checking the user prompt for the "# EMERGENCY" header
-// (a stable seam — we control both the prompt builder and the mock).
+// A generation is classified as emergency iff the user prompt contains the
+// stable "# EMERGENCY" header line (we control both the prompt builder and
+// the mock, so this is robust).
 // ===========================================================================
 
 class MockLlmBackend {
@@ -274,41 +431,93 @@ async function* httpNdjsonPost({ host, port, path, body, timeout, signal }) {
   }
 }
 
-async function httpJsonPost({ host, port, path, body, timeout, signal }) {
+async function httpJsonPost({ host, port, path, body, useHttps, headers, timeout, signal }) {
   const json = JSON.stringify(body);
+  const mergedHeaders = {
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(json),
+    "accept": "application/json",
+    ...(headers ?? {}),
+  };
   const res = await httpRequest({
     host, port, path,
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "content-length": Buffer.byteLength(json),
-      "accept": "application/json",
-    },
+    headers: mergedHeaders,
     body: json,
     timeout,
     signal,
+    useHttps,
   });
-  // Node 18+ IncomingMessage is itself AsyncIterable. Older Node (<18)
-  // exposed the body as `res`. Pass `res` to streamToString which detects
-  // both shapes.
   const text = await streamToString(res, signal);
   return JSON.parse(text);
 }
 
-async function httpJsonGet({ host, port, path, timeout }) {
+async function httpJsonGet({ host, port, path, useHttps, headers, timeout }) {
+  const mergedHeaders = { accept: "application/json", ...(headers ?? {}) };
   const res = await httpRequest({
     host, port, path,
     method: "GET",
-    headers: { "accept": "application/json" },
+    headers: mergedHeaders,
     timeout,
+    useHttps,
   });
   const text = await streamToString(res, null);
   return JSON.parse(text);
 }
 
-function httpRequest({ host, port, path, method, headers, body, timeout, signal }) {
+/**
+ * POST a JSON body and stream back Server-Sent Events. Each event is yielded
+ * as { event: string, data: string, id: string }.
+ */
+async function* httpPostSse({ host, port, path, body, headers, timeout, signal, requester }) {
+  const res = await httpRequest({
+    host, port, path,
+    method: "POST",
+    headers,
+    body,
+    timeout,
+    signal,
+    requester,
+  });
+
+  let buf = "";
+  const source = res && res[Symbol.asyncIterator] ? res : res?.body;
+  if (!source) throw new Error("httpPostSse: response is not a Readable stream");
+  for await (const chunk of source) {
+    if (signal?.aborted) { res.destroy(); throw new DOMException("aborted", "AbortError"); }
+    buf += chunk.toString("utf8");
+    // SSE events are delimited by a blank line.
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      yield parseSseBlock(block);
+    }
+  }
+  if (buf.trim().length > 0) yield parseSseBlock(buf);
+}
+
+function parseSseBlock(block) {
+  const evt = { event: "message", data: "", id: "" };
+  for (const raw of block.split("\n")) {
+    if (raw.length === 0 || raw.startsWith(":")) continue;
+    const colon = raw.indexOf(":");
+    if (colon === -1) continue;
+    const field = raw.slice(0, colon);
+    let value = raw.slice(colon + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "data")    evt.data = value;
+    else if (field === "event") evt.event = value;
+    else if (field === "id")    evt.id = value;
+  }
+  return evt;
+}
+
+function httpRequest({ host, port, path, method, headers, body, timeout, signal, requester, useHttps }) {
+  const opts = { host, port, path, method, headers };
+  const reqFn = (requester ?? (useHttps ? httpsRequest : null)) ?? request;
   return new Promise((resolve, reject) => {
-    const req = request({ host, port, path, method, headers }, (res) => {
+    const req = reqFn(opts, (res) => {
       if (res.statusCode >= 400) {
         let buf = "";
         res.on("data", (c) => (buf += c));
@@ -353,7 +562,46 @@ async function streamToString(stream, signal) {
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
+// ===========================================================================
+// Pull-and-play factory: pick the right backend based on environment.
+//
+// Precedence:
+//   1. Explicit `opts.backend`        — caller wins
+//   2. CLOUD_LLM_BASE_URL + CLOUD_LLM_MODEL — OpenAI-compatible cloud
+//   3. (default)                       — local Ollama
+//
+// Env vars:
+//   CLOUD_LLM_BASE_URL   e.g. "https://api.openai.com" or "http://127.0.0.1:8080"
+//   CLOUD_LLM_API_KEY    Bearer token (optional for local servers)
+//   CLOUD_LLM_MODEL      e.g. "gpt-4o-mini", "llama-3.1-8b-instant"
+//
+//   LOCAL_LLM_MODEL      Override the default Ollama model (default: qwen3:4b)
+//   LOCAL_LLM_EMBED      Override the embed model  (default: nomic-embed-text:latest)
+// ===========================================================================
+
+function createBackend(opts = {}) {
+  if (opts.backend) return opts.backend;
+
+  const cloudUrl   = process.env.CLOUD_LLM_BASE_URL;
+  const cloudModel = process.env.CLOUD_LLM_MODEL;
+  if (cloudUrl && cloudModel) {
+    return new OpenAiCompatibleBackend({
+      baseUrl: cloudUrl,
+      apiKey:  process.env.CLOUD_LLM_API_KEY ?? "",
+      model:   cloudModel,
+    });
+  }
+
+  return new HttpLlmBackend({
+    defaultModel:      process.env.LOCAL_LLM_MODEL   ?? "qwen3:4b",
+    defaultEmbedModel: process.env.LOCAL_LLM_EMBED   ?? "nomic-embed-text:latest",
+    ...(opts.httpOpts ?? {}),
+  });
+}
+
 module.exports = {
   HttpLlmBackend,
+  OpenAiCompatibleBackend,
   MockLlmBackend,
+  createBackend,
 };

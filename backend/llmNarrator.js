@@ -33,7 +33,9 @@
 const EventEmitter = require("events");
 const {
   HttpLlmBackend,
+  OpenAiCompatibleBackend,
   MockLlmBackend,
+  createBackend,
 } = require("./llmBackends");
 
 const DEFAULT_NORMAL_INTERVAL_MS = 4000;
@@ -459,9 +461,15 @@ Never exceed one <a2a> block per response. Never invent sensor values. Allowed a
 // ===========================================================================
 
 function createNarrator(opts = {}) {
-  const backend = opts.backend ?? new HttpLlmBackend({
-    defaultModel:      opts.model      ?? "qwen3:4b",
-    defaultEmbedModel: opts.embedModel ?? "nomic-embed-text:latest",
+  // Honour the caller-supplied backend, otherwise pick via env. This means
+  //   set CLOUD_LLM_BASE_URL / CLOUD_LLM_MODEL  -> cloud
+  //   leave alone                                -> local Ollama
+  //   pass opts.backend = new MockLlmBackend()   -> deterministic tests
+  const backend = opts.backend ?? createBackend({
+    httpOpts: {
+      defaultModel:      opts.model      ?? "qwen3:4b",
+      defaultEmbedModel: opts.embedModel ?? "nomic-embed-text:latest",
+    },
   });
   return new LlmNarrator({
     backend,
@@ -522,5 +530,11 @@ module.exports = {
   parseAndValidateA2A,
   constructUserPrompt,
   createNarrator,
+  createBackend,
   ALLOWED_ACTIONS,
+  // Re-export backend classes for convenience so callers can do
+  //   const { LlmNarrator, MockLlmBackend, OpenAiCompatibleBackend } = require("./llmNarrator");
+  HttpLlmBackend,
+  OpenAiCompatibleBackend,
+  MockLlmBackend,
 };
