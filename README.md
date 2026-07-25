@@ -21,10 +21,12 @@ trinity-agent/
 
 ## What runs in Phase 1
 
-| Script              | Purpose                                                       |
-|---------------------|---------------------------------------------------------------|
-| `npm run streamer`  | Spawns the mock Signal K WebSocket server on `ws://127.0.0.1:3000` |
-| `node tests/streamer.smoke.js` | Boots the streamer, validates 6 heartbeats, tears down  |
+| Script                | Purpose                                                                  |
+|-----------------------|--------------------------------------------------------------------------|
+| `npm run streamer`    | Spawns the mock Signal K WebSocket server on `ws://127.0.0.1:3000`       |
+| `npm run ingest`      | Connects an ingest client to the streamer and logs feature vectors       |
+| `npm test`            | Runs `tests/pipeline.test.js` — the full end-to-end Phase 1 verification |
+| `node tests/streamer.smoke.js`  | Streamer-only smoke test (legacy, superseded by `npm test`)        |
 
 ## Wire protocol (Signal K delta)
 
@@ -56,7 +58,7 @@ Immediately on connect, the server sends a `{ "type": "hello" }` frame so consum
 - **Heartbeat is dt-aware**: we measure real elapsed ms between ticks and feed that to the simulator so the world model stays in sync even if Node's timer ever jitters.
 - **Trajectory is a closed loop** of 6 waypoints along the SF Bay shoreline. After reaching "Marina Green Flats" the vessel teleports back to "Golden Gate Approach" and the depth field resets.
 
-## Next steps (Phase 1 continuation)
+## Next steps (Phase 2)
 
-- [ ] `backend/telemetryIngest.js` — pre-allocated ring buffer, fixed-layout `Float64Array` feature vector
-- [ ] `tests/pipeline.test.js` — automated end-to-end verification of the ingestion pipeline
+- [ ] Cognitive engine: JEPA world-model + embedding memory + local LLM narrator
+- [ ] A2A JSON-RPC bridge into the Theia frontend for layout mutations

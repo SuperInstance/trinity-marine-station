@@ -6,7 +6,8 @@
   "scripts": {
     "streamer": "node backend/mockSignalK.js",
     "ingest": "node backend/telemetryIngest.js",
-    "test:pipeline": "node tests/pipeline.test.js"
+    "test:pipeline": "node tests/pipeline.test.js",
+    "test": "node tests/pipeline.test.js"
   },
   "engines": {
     "node": ">=18.0.0"
