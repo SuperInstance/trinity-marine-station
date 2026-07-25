@@ -65,6 +65,19 @@ const EVENTS = Object.freeze({
   // ------------------------------------------------------------------
   DAEMON_LIFECYCLE:      "daemon:lifecycle",     // ({event, ...})  boot/ready/shutdown
   DAEMON_A2A:            "daemon:a2a",           // (A2AAction)   re-emitted post-validation
+
+  // ------------------------------------------------------------------
+  // Vessel-Agent integration (Phase 4+)
+  // ------------------------------------------------------------------
+  // These events are emitted by the schema-bridge when vessel-agent
+  // vocabulary fields arrive in a delta. Downstream listeners can correlate
+  // multi-modal ingestion (crew voice reports, fleet intelligence) with
+  // the rest of the cognitive loop.
+  CREW_REPORT:           "crew:report",          // (TrinityFrame.crewReport)
+  FLEET_REPORT:          "fleet:report",         // (TrinityFrame.fleetReport)
+  SPATIAL_CELL_CHANGE:   "spatial:cell-change",  // ({prev, next, frame})  anomaly trigger
+  ANOMALY_CLASSIFIED:    "anomaly:classified",   // ({reason, energy, frame})  upstream-of-narrator
+  WORKSPACE_MORPH:       "workspace:morph",      // (A2AAction)  re-emitted pre-frontend
 });
 
 /**

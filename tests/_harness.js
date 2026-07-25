@@ -62,6 +62,80 @@ function assert(cond, msg) {
   if (!cond) throw new Error(msg || "assertion failed");
 }
 
+/**
+ * Assert that `fn` throws. Optionally match the thrown error message against
+ * `msgPattern` (RegExp or string substring).
+ *
+ * @param {() => any} fn
+ * @param {RegExp|string} [msgPattern]
+ * @returns {Error} the thrown error, for further inspection
+ */
+function assertThrows(fn, msgPattern) {
+  let thrown = null;
+  try { fn(); }
+  catch (e) { thrown = e; }
+  if (thrown === null) {
+    throw new Error("assertThrows: expected fn() to throw, but it did not");
+  }
+  if (msgPattern !== undefined) {
+    const msg = thrown && thrown.message ? thrown.message : String(thrown);
+    const matches = msgPattern instanceof RegExp
+      ? msgPattern.test(msg)
+      : msg.includes(String(msgPattern));
+    if (!matches) {
+      throw new Error(
+        `assertThrows: error message ${JSON.stringify(msg)} did not match ${msgPattern}`
+      );
+    }
+  }
+  return thrown;
+}
+
+/**
+ * Assert that `fn` does NOT throw. Returns whatever fn returns.
+ */
+function assertDoesNotThrow(fn, label) {
+  try { return fn(); }
+  catch (e) {
+    throw new Error(`assertDoesNotThrow${label ? " (" + label + ")" : ""}: unexpected throw: ${e.message}`);
+  }
+}
+
+/**
+ * Assert two values are strictly equal (===). Throws with both sides' stringified
+ * forms on failure. BigInts are stringified with the trailing 'n' preserved.
+ */
+function assertEq(actual, expected, label) {
+  // BigInt equality — === is already correct but JSON.stringify throws on BigInt.
+  if (typeof actual === "bigint" || typeof expected === "bigint") {
+    if (actual !== expected) {
+      throw new Error(
+        `assertEq${label ? " (" + label + ")" : ""}: expected ${String(expected)}n, got ${String(actual)}n`
+      );
+    }
+    return;
+  }
+  if (actual !== expected) {
+    throw new Error(
+      `assertEq${label ? " (" + label + ")" : ""}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`
+    );
+  }
+}
+
+/**
+ * Assert `actual` is within `tolerance` of `expected`.
+ */
+function assertNear(actual, expected, tolerance, label) {
+  if (typeof actual !== "number" || !Number.isFinite(actual)) {
+    throw new Error(`assertNear${label ? " (" + label + ")" : ""}: actual is not a finite number (${actual})`);
+  }
+  if (Math.abs(actual - expected) > tolerance) {
+    throw new Error(
+      `assertNear${label ? " (" + label + ")" : ""}: expected ${expected}±${tolerance}, got ${actual}`
+    );
+  }
+}
+
 function section(name) {
   console.log(`\n--- ${name} ---`);
 }
@@ -109,6 +183,10 @@ async function run(suiteName, body) {
 module.exports = {
   test,
   assert,
+  assertThrows,
+  assertDoesNotThrow,
+  assertEq,
+  assertNear,
   ok,
   bad,
   section,

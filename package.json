@@ -1,8 +1,8 @@
 {
   "name": "trinity-marine-station",
-  "version": "0.4.0-phase3.5",
+  "version": "0.5.0-phase4",
   "private": true,
-  "description": "Next-generation, agentic-first marine navigation station. JEPA world model + conscious narrator (Ollama or OpenAI-compatible cloud) + Signal K telemetry + A2A frontend mutations.",
+  "description": "Next-generation, agentic-first marine navigation station. JEPA world model + conscious narrator (Ollama or OpenAI-compatible cloud) + Signal K + vessel-agent telemetry + A2A frontend mutations. Cognitive-layer sibling of SuperInstance/vessel-agent.",
   "scripts": {
     "streamer":     "node backend/mockSignalK.js",
     "ingest":       "node backend/telemetryIngest.js",
@@ -13,13 +13,18 @@
     "status":       "node -e \"require('http').get('http://127.0.0.1:3001/status',r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)))})\"",
     "health":       "node -e \"require('http').get('http://127.0.0.1:3001/health',r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>console.log(d))})\"",
     "lint":         "node tools/lint.js",
-    "test:pipeline":  "node tests/pipeline.test.js",
-    "test:lifecycle": "node tests/trinityLifecycle.test.js",
-    "test:ollama":    "node tests/ollama.smoke.test.js",
-    "test:vector":    "node tests/vectorStore.test.js",
-    "test:daemon":    "node tests/daemon.test.js",
-    "test:openai":    "node tests/openai.smoke.test.js",
-    "test":           "node tests/run.js"
+    "test:pipeline":     "node tests/pipeline.test.js",
+    "test:lifecycle":    "node tests/trinityLifecycle.test.js",
+    "test:ollama":       "node tests/ollama.smoke.test.js",
+    "test:openai":       "node tests/openai.smoke.test.js",
+    "test:vector":       "node tests/vectorStore.test.js",
+    "test:daemon":       "node tests/daemon.test.js",
+    "test:schemas":      "node tests/schemas.test.js",
+    "test:circuit":      "node tests/circuitBreaker.test.js",
+    "test:health":       "node tests/healthCheck.test.js",
+    "test:h3":           "node tests/h3.test.js",
+    "test:vessel":       "node tests/vesselAgentAdapter.test.js",
+    "test":              "node tests/run.js"
   },
   "engines": {
     "node": ">=18.0.0"

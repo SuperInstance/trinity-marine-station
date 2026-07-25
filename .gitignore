@@ -15,3 +15,6 @@ build/
 
 # Agent session notes (local only)
 .agent_memory.json
+
+# Research corpus (downloaded docs for synthesis, not source code)
+.research/

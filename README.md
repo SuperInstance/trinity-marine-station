@@ -25,7 +25,18 @@
                                    │ a2a actions
                                    ▼
               ┌──────────────────────────────────────────┐
-              │  Phase 4 — Theia workspace (PLANNED)     │
+              │  Phase 4 — vessel-agent integration      │
+              │  (DONE — anti-corruption adapter)        │
+              │   vesselAgentAdapter normalizes BOTH     │
+              │   Signal K deltas AND vessel-agent       │
+              │   core_anchor JSON into TrinityFrame     │
+              │   + H3 spatial index per frame           │
+              │   + vessel-uuid provenance               │
+              └────────────────────┬─────────────────────┘
+                                   │ canonical TrinityFrame
+                                   ▼
+              ┌──────────────────────────────────────────┐
+              │  Phase 5 — Theia workspace (PLANNED)     │
               │  Eclipse Theia IDE + JSON-RPC A2A bridge │
               │  AI morphs panels at runtime             │
               └──────────────────────────────────────────┘
@@ -46,9 +57,24 @@
 | **AI**   | `backend/llmBackends.js` | Pluggable `LlmBackend` — `HttpLlmBackend` (Ollama) + `MockLlmBackend` for tests. |
 | **AI**   | `backend/llmNarrator.js` | The Conscious Narrator. Streams LLM output, splits prose vs `<a2a>` blocks. Throttled normal mode, instant emergency mode. |
 | **AI**   | `backend/trinityCore.js` | Wires the world model + narrator. Polls the ring buffer every 500 ms, branches on energy. |
+| **AI**   | `backend/trinityDaemon.js` | Production daemon: wires ingest → JEPA → narrator → ops HTTP (`/health`, `/status`). |
+| **AI**   | `backend/vectorStore.js` | Pre-allocated Float32Array matrix. Cosine / dot / L2 similarity, `EmbeddingRetriever` wrapper. |
+| **AI**   | `backend/schemas.js` | Single source of truth: validates `TrinityFrame`, `A2AAction`, `JepaEnergyReading`, `FeatureVector`, `VesselAnchor`. |
+| **AI**   | `backend/circuitBreaker.js` | Three-state (closed/open/half-open) breaker around the LLM backend, with `execStream` for async iterators. |
+| **AI**   | `backend/healthCheck.js` | Probe runner + status aggregator for the daemon's `/health` endpoint. |
+| **Data** | `backend/h3.js` | Lightweight H3-style spatial indexer (drop-in compatible with `h3-js`). |
+| **Data** | `backend/vesselAgentAdapter.js` | Anti-corruption layer: normalizes Signal K + vessel-agent `core_anchor` JSON into a canonical `TrinityFrame`. |
 | **Test** | `tests/pipeline.test.js` | End-to-end Phase 1 verification (streamer + ingest + ring buffer). |
 | **Test** | `tests/trinityLifecycle.test.js` | Static-deterministic + live-WebSocket lifecycle of the full Trinity. |
+| **Test** | `tests/daemon.test.js` | Spawns the daemon, exercises `/health` + `/status`, validates graceful shutdown. |
+| **Test** | `tests/vectorStore.test.js` | Cosine / dot / L2, auto-grow, embedFn round-trip, retriever. |
 | **Test** | `tests/ollama.smoke.test.js` | Live Ollama integration (skips gracefully if Ollama isn't running). |
+| **Test** | `tests/openai.smoke.test.js` | OpenAI-compatible backend with a local mock SSE server. |
+| **Test** | `tests/schemas.test.js` | Every validator: success path, rejection path, edge cases. |
+| **Test** | `tests/circuitBreaker.test.js` | State machine, threshold, half-open probe, execStream coverage. |
+| **Test** | `tests/healthCheck.test.js` | Probe runner, status aggregator, timeout bounds. |
+| **Test** | `tests/h3.test.js` | H3 encoding determinism, locality, dateline wrap, haversine accuracy. |
+| **Test** | `tests/vesselAgentAdapter.test.js` | Signal K + vessel-agent normalization, schema round-trip, rejection paths. |
 | **Test** | `tests/run.js` | Unified runner that discovers every `*.test.js`, aggregates exit codes, never lets a stray stderr line fail `npm test`. |
 
 ---
@@ -209,7 +235,23 @@ const backend = new OpenAiCompatibleBackend({
 | **1** | Sensory Ingestion Foundation   | ✅ Complete |
 | **2** | JEPA Cognitive Engine          | ✅ Complete (energy-score predictor) |
 | **3** | Conscious Narrator + A2A       | ✅ Complete (Ollama + Mock, anomaly-driven emergency) |
-| **4** | Theia Modular Workspace        | ⏳ Next — JSON-RPC A2A bridge + Theia extension |
+| **3.5** | Daemon, Vector Store, Cloud Backend | ✅ Complete (unified daemon + OpenAI-compatible backend) |
+| **4** | vessel-agent Integration       | ✅ Complete (anti-corruption adapter, H3 indexing, provenance) |
+| **5** | Theia Modular Workspace        | ⏳ Next — JSON-RPC A2A bridge + Theia extension |
+
+---
+
+## Cross-system synthesis
+
+This repo is the **cognitive layer** of a two-system stack. The data-layer sibling is
+[`SuperInstance/vessel-agent`](https://github.com/SuperInstance/vessel-agent) — a Python
+project that captures raw NMEA / acoustic / catch data on the boat workstation.
+
+They meet at a clean integration boundary — see [`docs/SYNERGY.md`](docs/SYNERGY.md) for:
+- L0–L4 cognitive-level mapping (BMAD methodology)
+- Triply-anchored records (timestamp / lat-lon-H3 / vessel-uuid)
+- The wire-format strict superset (Signal K + vessel-agent vocabulary)
+- 7 concrete integration deliverables that are already landed in this repo
 
 ---
 

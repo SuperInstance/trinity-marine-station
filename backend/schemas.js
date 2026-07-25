@@ -274,6 +274,110 @@ function makeLlmChunk(text, extra = {}) {
 }
 
 // ===========================================================================
+// 6. TrinityFrame — canonical internal shape produced by vesselAgentAdapter.
+// ----------------------------------------------------------------------------
+// Every module downstream of the WebSocket consumes this shape. Adding a
+// new field here is a one-line edit; everything else stays untouched.
+// ===========================================================================
+
+/**
+ * @typedef {object} TrinityFrame
+ * @property {bigint} timestampNs                  Nanosecond-anchored timestamp
+ * @property {string} timestamp                    ISO-8601 mirror (human-readable)
+ * @property {object} source                       Provenance triple
+ * @property {string} source.vesselUuid
+ * @property {string} source.hardwareSource
+ * @property {string} source.pipelineVersion
+ * @property {object} navigation                   Position + motion
+ * @property {number} navigation.latitude           degrees, [-90, 90]
+ * @property {number} navigation.longitude          degrees, [-180, 180]
+ * @property {number} navigation.speedOverGround    knots
+ * @property {number} navigation.headingTrue        degrees, [0, 360)
+ * @property {object} environment
+ * @property {number} environment.depthBelowTransducer  meters
+ * @property {object} spatial
+ * @property {string} spatial.h3Index               16-char hex
+ * @property {number} [trajectoryProgress]          0..1 (optional ground-truth label)
+ * @property {string} [currentWaypoint]             optional waypoint name
+ * @property {object} [crewReport]
+ * @property {string} crewReport.transcript
+ * @property {number} crewReport.confidence         0..1
+ * @property {object} [fleetReport]
+ * @property {string} fleetReport.sourceVessel
+ */
+
+/**
+ * Validate a TrinityFrame. Returns { ok: true, value } on success.
+ * The validator is defensive: it does NOT mutate the input.
+ *
+ * @param {any} f
+ * @returns {{ ok: true, value: object } | { ok: false, errors: string[] }}
+ */
+function validateTrinityFrame(f) {
+  const errors = [];
+  if (!isPlainObject(f))                  errors.push("frame is not an object");
+  if (typeof f?.timestampNs !== "bigint") errors.push("timestampNs must be BigInt");
+  if (!isString(f?.timestamp))            errors.push("timestamp must be ISO string");
+  if (!isPlainObject(f?.source))          errors.push("source must be an object");
+  else {
+    if (!isString(f.source.vesselUuid))      errors.push("source.vesselUuid must be string");
+    if (!isString(f.source.hardwareSource))  errors.push("source.hardwareSource must be string");
+    if (!isString(f.source.pipelineVersion)) errors.push("source.pipelineVersion must be string");
+  }
+  if (!isPlainObject(f?.navigation))      errors.push("navigation must be an object");
+  else {
+    if (!isFiniteNumber(f.navigation.latitude))         errors.push("navigation.latitude not finite");
+    if (!isFiniteNumber(f.navigation.longitude))        errors.push("navigation.longitude not finite");
+    if (!isFiniteNumber(f.navigation.speedOverGround))  errors.push("navigation.speedOverGround not finite");
+    if (!isFiniteNumber(f.navigation.headingTrue))      errors.push("navigation.headingTrue not finite");
+  }
+  if (!isPlainObject(f?.environment))     errors.push("environment must be an object");
+  else if (!isFiniteNumber(f.environment.depthBelowTransducer))
+    errors.push("environment.depthBelowTransducer not finite");
+  if (!isPlainObject(f?.spatial))         errors.push("spatial must be an object");
+  else if (!isString(f.spatial.h3Index))  errors.push("spatial.h3Index must be hex string");
+  // crewReport / fleetReport are optional
+  if (f?.crewReport !== undefined) {
+    if (!isPlainObject(f.crewReport))               errors.push("crewReport must be object");
+    else if (!isString(f.crewReport.transcript))     errors.push("crewReport.transcript must be string");
+  }
+  if (f?.fleetReport !== undefined) {
+    if (!isPlainObject(f.fleetReport))              errors.push("fleetReport must be object");
+    else if (!isString(f.fleetReport.sourceVessel)) errors.push("fleetReport.sourceVessel must be string");
+  }
+  if (errors.length) return { ok: false, errors };
+  return { ok: true, value: f };
+}
+
+// ===========================================================================
+// 7. VesselAnchor — the upstream vessel-agent "core_anchor" schema.
+// ----------------------------------------------------------------------------
+// We don't generate this shape ourselves; we *accept* it on the WebSocket
+// and immediately normalize to TrinityFrame via vesselAgentAdapter. This
+// validator exists so we can reject malformed upstream messages early.
+// ===========================================================================
+
+/**
+ * Lightly validate that an incoming message looks like a vessel-agent
+ * core_anchor update envelope. NOT exhaustive — deep field checks happen
+ * inside the adapter.
+ *
+ * @param {any} msg
+ * @returns {boolean}
+ */
+function isPlausibleVesselAnchor(msg) {
+  if (!isPlainObject(msg)) return false;
+  if (!Array.isArray(msg.updates) || msg.updates.length === 0) return false;
+  const u = msg.updates[0];
+  if (!isPlainObject(u)) return false;
+  // Must carry either a timestamp (ISO) or a timestamp_ns (nanoseconds).
+  const hasTs    = isString(u.timestamp);
+  const hasTsNs  = isFiniteNumber(u.timestamp_ns);
+  const hasValues = isPlainObject(u.values);
+  return (hasTs || hasTsNs) && hasValues;
+}
+
+// ===========================================================================
 // Module exports
 // ===========================================================================
 
@@ -291,4 +395,6 @@ module.exports = {
   validateA2AAction,
   parseAndValidateA2A,
   makeLlmChunk,
+  validateTrinityFrame,
+  isPlausibleVesselAnchor,
 };
