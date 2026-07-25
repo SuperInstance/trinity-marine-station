@@ -3,8 +3,6 @@
  * ----------------------------------------------------------------------------
  * Unit + integration tests for the in-memory vector store and the
  * EmbeddingRetriever wrapper.
- *
- * Run with:  npm run test:vector
  * ----------------------------------------------------------------------------
  */
 
@@ -14,48 +12,35 @@ const {
   EmbeddingRetriever,
 } = require("../backend/vectorStore");
 
-let pass = 0, fail = 0;
-function test(name, fn) {
-  try {
-    const r = fn();
-    if (r && typeof r.then === "function") {
-      return r.then(() => { console.log(`  ok   ${name}`); pass++; },
-                     (err) => { console.log(`  FAIL ${name}: ${err.message}`); fail++; });
-    }
-    console.log(`  ok   ${name}`); pass++;
-  } catch (err) {
-    console.log(`  FAIL ${name}: ${err.message}`); fail++;
-  }
-}
+const { test, run } = require("./_harness");
 
-(async () => {
-  console.log("VectorStore tests");
+run("vector store", async () => {
 
   // ----------- basic add + query -----------
-  await test("size starts at 0", () => {
+  test("size starts at 0", () => {
     const s = new InMemoryVectorStore({ dim: 4 });
     assert.equal(s.size(), 0);
   });
 
-  await test("add stores vector and assigns id", () => {
+  test("add stores vector and assigns id", () => {
     const s = new InMemoryVectorStore({ dim: 4 });
     const id = s.add([1, 0, 0, 0], { text: "east" });
     assert.equal(typeof id, "number");
     assert.equal(s.size(), 1);
   });
 
-  await test("add rejects wrong-dim vector", () => {
+  test("add rejects wrong-dim vector", () => {
     const s = new InMemoryVectorStore({ dim: 4 });
     assert.equal(s.add([1, 2, 3]), null);
     assert.equal(s.size(), 0);
   });
 
-  await test("query returns 0 results for empty store", () => {
+  test("query returns 0 results for empty store", () => {
     const s = new InMemoryVectorStore({ dim: 4 });
     assert.deepEqual(s.query([1, 0, 0, 0], 3), []);
   });
 
-  await test("cosine similarity: same vector scores 1.0", () => {
+  test("cosine similarity: same vector scores 1.0", () => {
     const s = new InMemoryVectorStore({ dim: 4 });
     s.add([1, 0, 0, 0], { text: "east" });
     const hits = s.query([1, 0, 0, 0], 1);
@@ -64,14 +49,14 @@ function test(name, fn) {
     assert.equal(hits[0].metadata.text, "east");
   });
 
-  await test("cosine similarity: orthogonal scores 0.0", () => {
+  test("cosine similarity: orthogonal scores 0.0", () => {
     const s = new InMemoryVectorStore({ dim: 4 });
     s.add([1, 0, 0, 0]);
     const hits = s.query([0, 1, 0, 0], 1);
     assert.ok(Math.abs(hits[0].similarity - 0.0) < 1e-6, "expected 0.0");
   });
 
-  await test("cosine similarity: 45-degree scores ~0.707", () => {
+  test("cosine similarity: 45-degree scores ~0.707", () => {
     const s = new InMemoryVectorStore({ dim: 4 });
     s.add([1, 1, 0, 0]);
     const hits = s.query([1, 0, 0, 0], 1);
@@ -79,7 +64,7 @@ function test(name, fn) {
               `expected ~0.707, got ${hits[0].similarity}`);
   });
 
-  await test("query returns top-K sorted descending", () => {
+  test("query returns top-K sorted descending", () => {
     const s = new InMemoryVectorStore({ dim: 4 });
     s.add([1, 0, 0, 0], { text: "exact" });
     s.add([0.9, 0.1, 0, 0], { text: "near" });
@@ -97,14 +82,14 @@ function test(name, fn) {
     }
   });
 
-  await test("query respects k bound", () => {
+  test("query respects k bound", () => {
     const s = new InMemoryVectorStore({ dim: 4 });
     for (let i = 0; i < 10; i++) s.add([Math.random(), Math.random(), 0, 0]);
     const hits = s.query([0.5, 0.5, 0, 0], 3);
     assert.equal(hits.length, 3);
   });
 
-  await test("clear() empties the store", () => {
+  test("clear() empties the store", () => {
     const s = new InMemoryVectorStore({ dim: 4 });
     s.add([1, 0, 0, 0]);
     s.add([0, 1, 0, 0]);
@@ -115,14 +100,14 @@ function test(name, fn) {
   });
 
   // ----------- metric: dot / l2 -----------
-  await test("dot metric returns raw dot product", () => {
+  test("dot metric returns raw dot product", () => {
     const s = new InMemoryVectorStore({ dim: 4, metric: "dot" });
     s.add([1, 2, 3, 4]);
     const hits = s.query([1, 1, 1, 1], 1);
     assert.equal(hits[0].similarity, 10);
   });
 
-  await test("l2 metric: exact match scores 0 (distance)", () => {
+  test("l2 metric: exact match scores 0 (distance)", () => {
     const s = new InMemoryVectorStore({ dim: 4, metric: "l2" });
     s.add([1, 0, 0, 0]);
     const hits = s.query([1, 0, 0, 0], 1);
@@ -130,7 +115,7 @@ function test(name, fn) {
     assert.equal(Object.is(hits[0].similarity, 0) || Object.is(hits[0].similarity, -0), true);
   });
 
-  await test("l2 metric: non-match returns negative distance", () => {
+  test("l2 metric: non-match returns negative distance", () => {
     const s = new InMemoryVectorStore({ dim: 4, metric: "l2" });
     s.add([1, 0, 0, 0]);
     const hits = s.query([0, 1, 0, 0], 1);
@@ -138,7 +123,7 @@ function test(name, fn) {
   });
 
   // ----------- geometric capacity growth -----------
-  await test("grows capacity automatically when exceeding initial", () => {
+  test("grows capacity automatically when exceeding initial", () => {
     const s = new InMemoryVectorStore({ dim: 4, initialCapacity: 4 });
     for (let i = 0; i < 100; i++) s.add([Math.random(), Math.random(), Math.random(), Math.random()]);
     assert.equal(s.size(), 100);
@@ -148,7 +133,7 @@ function test(name, fn) {
   });
 
   // ----------- addText / queryText -----------
-  await test("addText + queryText round-trip with fake embedFn", async () => {
+  test("addText + queryText round-trip with fake embedFn", async () => {
     const s = new InMemoryVectorStore({ dim: 4 });
     const fakeEmbed = (text) => {
       const v = new Float32Array(4);
@@ -165,7 +150,7 @@ function test(name, fn) {
   });
 
   // ----------- EmbeddingRetriever -----------
-  await test("EmbeddingRetriever with vector input", async () => {
+  test("EmbeddingRetriever with vector input", async () => {
     const s = new InMemoryVectorStore({ dim: 4 });
     s.add([1, 0, 0, 0], { text: "east" });
     s.add([0, 1, 0, 0], { text: "north" });
@@ -175,7 +160,7 @@ function test(name, fn) {
     assert.equal(hits[0].text, "east");
   });
 
-  await test("EmbeddingRetriever with text input requires embedFn", async () => {
+  test("EmbeddingRetriever with text input requires embedFn", async () => {
     const s = new InMemoryVectorStore({ dim: 4 });
     s.add([1, 0, 0, 0], { text: "east" });
     const r = new EmbeddingRetriever({ store: s });
@@ -190,17 +175,11 @@ function test(name, fn) {
     assert.equal(hits2[0].text, "east");
   });
 
-  await test("EmbeddingRetriever returns [] for null input", async () => {
+  test("EmbeddingRetriever returns [] for null input", async () => {
     const s = new InMemoryVectorStore({ dim: 4 });
     s.add([1, 0, 0, 0]);
     const r = new EmbeddingRetriever({ store: s });
     const hits = await r.retrieve(null);
     assert.deepEqual(hits, []);
   });
-
-  // ----------- summary -----------
-  console.log("---");
-  console.log(`  ${pass} passed, ${fail} failed`);
-  if (fail > 0) process.exit(1);
-  console.log("vector store: ALL TESTS PASSED");
-})();
+});

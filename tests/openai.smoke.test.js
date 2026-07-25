@@ -19,14 +19,7 @@
 const assert = require("node:assert/strict");
 const http   = require("node:http");
 const { OpenAiCompatibleBackend } = require("../backend/llmBackends");
-
-let pass = 0, fail = 0;
-function test(name, fn) {
-  return Promise.resolve()
-    .then(fn)
-    .then(() => { console.log(`  ok   ${name}`); pass++; })
-    .catch((err) => { console.log(`  FAIL ${name}: ${err.message}`); fail++; });
-}
+const { test, run, sleep } = require("./_harness");
 
 // ---------- mock OpenAI-compatible server ----------
 //
@@ -81,11 +74,9 @@ function startMockOpenAi(mode = "happy") {
   });
 }
 
-(async () => {
-  console.log("OpenAI-compatible backend tests");
-
+run("openai backend", async () => {
   // ---- TEST: happy-path stream parsing ----
-  await test("generate() parses happy-path SSE stream", async () => {
+  test("generate() parses happy-path SSE stream", async () => {
     const { server, port } = await startMockOpenAi("happy");
     try {
       const backend = new OpenAiCompatibleBackend({
@@ -100,7 +91,6 @@ function startMockOpenAi(mode = "happy") {
       })) {
         chunks.push(c);
       }
-      // 2 content chunks + 1 finish chunk + 1 [DONE] terminal.
       const texts = chunks.filter((c) => c.text && c.text.length > 0).map((c) => c.text);
       assert.equal(texts.join(""), "Hello world");
       const terminal = chunks.find((c) => c.done);
@@ -109,7 +99,7 @@ function startMockOpenAi(mode = "happy") {
   });
 
   // ---- TEST: abort signal ----
-  await test("generate() honours AbortSignal", async () => {
+  test("generate() honours AbortSignal", async () => {
     const { server, port } = await startMockOpenAi("abort");
     let backend;
     try {
@@ -120,10 +110,6 @@ function startMockOpenAi(mode = "happy") {
       const ctrl = new AbortController();
       const chunks = [];
       let aborted = false;
-      // Race: either the for-await completes cleanly (because we call
-      // ctrl.abort() and the backend sees the flag and returns) or the
-      // destroyed HTTP connection throws an AbortError. Both are valid
-      // expressions of "abort was honoured".
       await new Promise((resolve) => {
         (async () => {
           try {
@@ -139,7 +125,6 @@ function startMockOpenAi(mode = "happy") {
             }
           } finally { resolve(); }
         })();
-        // Safety net: if neither path fires, resolve after 500ms anyway.
         setTimeout(resolve, 500);
       });
       assert.ok(chunks.length >= 2, `expected >=2 chunks, got ${chunks.length}`);
@@ -153,7 +138,7 @@ function startMockOpenAi(mode = "happy") {
   });
 
   // ---- TEST: embed() ----
-  await test("embed() returns Float32Array with correct shape", async () => {
+  test("embed() returns Float32Array with correct shape", async () => {
     const { server, port } = await startMockOpenAi("embed");
     try {
       const backend = new OpenAiCompatibleBackend({
@@ -169,7 +154,7 @@ function startMockOpenAi(mode = "happy") {
   });
 
   // ---- TEST: listModels() ----
-  await test("listModels() returns model IDs", async () => {
+  test("listModels() returns model IDs", async () => {
     const { server, port } = await startMockOpenAi("list");
     try {
       const backend = new OpenAiCompatibleBackend({
@@ -182,15 +167,11 @@ function startMockOpenAi(mode = "happy") {
   });
 
   // ---- TEST: constructor validation ----
-  await test("constructor rejects missing baseUrl", () => {
+  test("constructor rejects missing baseUrl", () => {
     assert.throws(() => new OpenAiCompatibleBackend({ model: "x" }), /baseUrl is required/);
   });
-  await test("constructor rejects missing model", () => {
+
+  test("constructor rejects missing model", () => {
     assert.throws(() => new OpenAiCompatibleBackend({ baseUrl: "http://x" }), /model is required/);
   });
-
-  console.log("---");
-  console.log(`  ${pass} passed, ${fail} failed`);
-  if (fail > 0) process.exit(1);
-  console.log("openai: ALL TESTS PASSED");
-})();
+});

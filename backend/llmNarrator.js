@@ -37,6 +37,8 @@ const {
   MockLlmBackend,
   createBackend,
 } = require("./llmBackends");
+const { CircuitBreaker, CircuitOpenError } = require("./circuitBreaker");
+const { parseAndValidateA2A: parseAndValidateA2ASchema, A2A_ALLOWED_ACTIONS } = require("./schemas");
 
 const DEFAULT_NORMAL_INTERVAL_MS = 4000;
 const DEFAULT_EMERGENCY_INTERVAL_MS = 250;
@@ -45,16 +47,9 @@ const A2A_CLOSE = "</a2a>";
 
 // Allow-list of action names the frontend knows how to execute. Anything
 // else is logged via 'malformed' and discarded — defense in depth.
-const ALLOWED_ACTIONS = new Set([
-  "morph_to_hazard_mode",
-  "morph_to_navigation_mode",
-  "morph_to_engineering_mode",
-  "highlight_waypoint",
-  "raise_alert",
-  "clear_alerts",
-  "set_panel_focus",
-  "announce",
-]);
+// We now source this from shared/schemas.js so the schema validator and the
+// narrator agree on the same set.
+const ALLOWED_ACTIONS = A2A_ALLOWED_ACTIONS;
 
 class LlmNarrator extends EventEmitter {
   /**
@@ -65,6 +60,14 @@ class LlmNarrator extends EventEmitter {
    * @param {number} [opts.maxTokens=200]         Token budget per generation.
    * @param {boolean} [opts.think=false]          Pass `think: false` to the backend
    *                                              (suppresses CoT on reasoning models).
+   * @param {CircuitBreaker} [opts.breaker]       Optional circuit breaker wrapping the
+   *                                              backend generate() call. When supplied,
+   *                                              repeated failures will short-circuit
+   *                                              subsequent calls and emit a 'degraded'
+   *                                              event instead of timing out.
+   * @param {number} [opts.maxConsecutiveErrors=3] When no breaker is supplied, the
+   *                                              narrator builds its own with this
+   *                                              failure threshold.
    */
   constructor(opts) {
     super();
@@ -75,6 +78,14 @@ class LlmNarrator extends EventEmitter {
     this._systemPrompt   = opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
     this._maxTokens      = opts.maxTokens ?? 200;
     this._think          = opts.think ?? false;
+
+    // Circuit breaker — protects the system when the LLM is unreachable.
+    // If the caller didn't supply one, build a sensible default.
+    this._breaker = opts.breaker ?? new CircuitBreaker({
+      name: "llm-narrator",
+      failureThreshold: opts.maxConsecutiveErrors ?? 3,
+      cooldownMs:       opts.cooldownMs ?? 30_000,
+    });
 
     this._abortController = null;
     this._inFlight        = false;
@@ -88,6 +99,7 @@ class LlmNarrator extends EventEmitter {
       emergencyGenerations: 0,
       abortedGenerations:  0,
       a2aActionsEmitted:   0,
+      degradedSkips:       0,
     };
   }
 
@@ -164,6 +176,7 @@ class LlmNarrator extends EventEmitter {
   get stats()      { return { ...this._stats }; }
   get inFlight()   { return this._inFlight; }
   get backend()    { return this._backend; }
+  get breaker()    { return this._breaker; }
 
   // -----------------------------------------------------------------------
   // Internals
@@ -186,16 +199,45 @@ class LlmNarrator extends EventEmitter {
     let aborted = false;
     const splitter = new StreamSplitter();
 
+    // Wrap the backend call in the circuit breaker. If the breaker is OPEN
+    // we skip the call entirely and emit a 'degraded' event, instead of
+    // waiting for an HTTP timeout to fail. The frontend can render the
+    // degraded state ("LLM offline") without any further work.
+    //
+    // CRITICAL: we use execStream() (not exec()) because the backend's
+    // generate() returns an async generator. `await` on an async generator
+    // would consume the first iteration step and return the first chunk
+    // instead of the iterator itself. execStream() preserves the iterator
+    // and tracks success/failure across the FULL iteration.
+    let gen;
     try {
-      for await (const chunk of this._backend.generate({
-        ...prompt,
-        signal: this._abortController.signal,
-        // Disable chain-of-thought on reasoning models (qwen3, deepseek-r1).
-        // We want the *answer*, not a description of how the model is
-        // thinking. Override by passing `think: true` to the constructor.
-        think: this._think,
-        maxTokens: this._maxTokens,
-      })) {
+      gen = this._breaker.execStream(
+        () => this._backend.generate({
+          ...prompt,
+          signal: this._abortController.signal,
+          // Disable chain-of-thought on reasoning models (qwen3, deepseek-r1).
+          // We want the *answer*, not a description of how the model is
+          // thinking. Override by passing `think: true` to the constructor.
+          think: this._think,
+          maxTokens: this._maxTokens,
+        }),
+        { signal: this._abortController.signal }
+      );
+    } catch (err) {
+      // Circuit was open before we even started — emit degraded and bail.
+      if (err instanceof CircuitOpenError) {
+        this._stats.degradedSkips += 1;
+        this._inFlight = false;
+        this._abortController = null;
+        this.emit("degraded", { reason: "circuit-open", retryInMs: err.retryInMs });
+        this.emit("generation-end", { reason, aborted: false });
+        return;
+      }
+      throw err;
+    }
+
+    try {
+      for await (const chunk of gen) {
         if (this._abortController.signal.aborted) { aborted = true; break; }
 
         // Prose track.
@@ -228,8 +270,16 @@ class LlmNarrator extends EventEmitter {
         }
       }
     } catch (err) {
-      if (err?.name === "AbortError") aborted = true;
-      else this.emit("error", err);
+      if (err?.name === "AbortError") {
+        aborted = true;
+      } else if (err instanceof CircuitOpenError) {
+        // The breaker tripped *during* the stream — most likely because
+        // the LLM disconnected mid-flight. Surface as degraded.
+        this._stats.degradedSkips += 1;
+        this.emit("degraded", { reason: "circuit-open-mid-stream", retryInMs: err.retryInMs });
+      } else {
+        this.emit("error", err);
+      }
     } finally {
       this._inFlight = false;
       this._abortController = null;
@@ -347,38 +397,25 @@ class StreamSplitter {
 // A2A parsing & validation
 // ===========================================================================
 
+// ===========================================================================
+// A2A parsing & validation
+// ----------------------------------------------------------------------------
+// Delegates to backend/schemas.js so the validator is the same code path
+// used by any other consumer (e.g. Theia frontend schema validation).
+// This file keeps the local helper as a thin wrapper for backward
+// compatibility with existing tests.
+// ===========================================================================
+
 /**
  * Parse a candidate A2A body as JSON, then validate it against our schema.
  * Returns the validated object on success, null on failure.
  *
  * @param {string} raw
- * @returns {A2AAction | null}
+ * @returns {object | null}
  */
 function parseAndValidateA2A(raw) {
-  if (typeof raw !== "string") return null;
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) return null;
-
-  let parsed;
-  try { parsed = JSON.parse(trimmed); }
-  catch { return null; }
-
-  if (!parsed || typeof parsed !== "object") return null;
-  if (typeof parsed.action !== "string")     return null;
-  if (!ALLOWED_ACTIONS.has(parsed.action))   return null;
-
-  // Optional fields with sane defaults.
-  const out = {
-    action:  parsed.action,
-    payload: (parsed.payload && typeof parsed.payload === "object") ? parsed.payload : {},
-    reason:  typeof parsed.reason === "string" ? parsed.reason : "",
-  };
-  if (typeof parsed.priority === "number") {
-    out.priority = Math.max(0, Math.min(1, parsed.priority));
-  } else {
-    out.priority = 0.5;
-  }
-  return out;
+  const r = parseAndValidateA2ASchema(raw);
+  return r.ok ? r.value : null;
 }
 
 // ===========================================================================
