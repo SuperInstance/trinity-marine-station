@@ -3,7 +3,7 @@
   "$id": "https://github.com/SuperInstance/trinity-marine-station/blob/main/docs/STATUS.json",
   "title": "Trinity Marine Station - Project Status Manifest",
   "description": "Agentic-first marine navigation station. Real-time ingestion of vessel telemetry, JEPA-style anomaly detection, local LLM narration, and a WebSocket A2A bridge to a future Eclipse Theia workspace.",
-  "generated_at": "2026-07-26T18:28:37.248Z",
+  "generated_at": "2026-07-26T19:03:47.757Z",
   "_comment": "Update 'generated_at' whenever this file is edited. Update 'commit' to the latest shipped commit hash (HEAD on main, when working tree is clean).",
   "name": "trinity-marine-station",
   "display_name": "Trinity Marine Station",
@@ -15,7 +15,7 @@
     "role": "L0/L1 data capture (NMEA, acoustic, catch); upstream of Trinity's L2 cognitive layer"
   },
   "license": "private (no license declared yet)",
-  "commit": "808dcaa186a9c7e83963444e313c4eef047d60d2",
+  "commit": "486c1e9c29d9e3b7350d6ca2d946eaa66d3bdf71",
   "branch": "main",
   "node_version_required": ">=18.0.0",
   "language": "JavaScript (Node.js, plain JS with JSDoc; no build step)",
@@ -106,10 +106,12 @@
     },
     "6": {
       "title": "unassigned",
-      "status": "candidate",
+      "status": "in_progress",
+      "shipped": [
+        "Sync-then-broadcast bridge (durability fix) — shipped in commit 486c1e9"
+      ],
       "candidates": [
         "Theia extension (TypeScript frontend that consumes the A2A bridge)",
-        "Sync-then-broadcast bridge (durability fix for crash-recovery)",
         "Real vessel-agent Python WS bridge (publishes trinity delta at :3000)",
         "DuckDB read-side adapter for retrospective queries",
         "h3-js integration for production-grade H3"
@@ -137,7 +139,7 @@
   },
   "modules": {
     "backend/a2aBridge.js": {
-      "lines": 492,
+      "lines": 526,
       "phase": 5,
       "exports": [
         "A2aBridge"
@@ -460,7 +462,7 @@
       "purpose": "Single source of truth: SF Bay trajectory waypoints, depth field, feature-vector layout."
     },
     "tools/auditLinks.js": {
-      "lines": 136,
+      "lines": 135,
       "phase": "5+",
       "exports": [
         "main"
@@ -554,7 +556,7 @@
         "file": "tests/a2aBridge.test.js",
         "assertions": 15,
         "covers": "bridge wire protocol",
-        "lines": 484
+        "lines": 629
       },
       {
         "file": "tests/a2aClient.test.js",
@@ -735,7 +737,17 @@
       "title": "Sync-then-broadcast bridge",
       "value": "high",
       "why": "Crash-recovery correctness. Trades ~5ms latency for durability. ~30 LOC.",
-      "blocks": "production-grade reliability"
+      "blocks": "production-grade reliability",
+      "status": "shipped",
+      "shipped_in_commit": "486c1e9",
+      "shipped_on": "2026-07-26",
+      "tests_added": [
+        "P6: action is persisted to log BEFORE broadcast (ordering invariant)",
+        "P6: dropped action (append failure) is NOT broadcast",
+        "P6: stats.actionsDropped is exposed and starts at 0"
+      ],
+      "stats_new_field": "actionsDropped",
+      "see_also": "docs/PHASE5.md section 5.1"
     },
     {
       "title": "Real vessel-agent Python WS bridge",
