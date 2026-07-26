@@ -36,9 +36,10 @@
                                    │ canonical TrinityFrame
                                    ▼
               ┌──────────────────────────────────────────┐
-              │  Phase 5 — Theia workspace (PLANNED)     │
-              │  Eclipse Theia IDE + JSON-RPC A2A bridge │
-              │  AI morphs panels at runtime             │
+              │  Phase 5 — Theia workspace (IN PROGRESS) │
+              │  A2A bridge shipped (commit 07bddbb);    │
+              │  Theia IDE + JSON-RPC consumer pending.  │
+              │  See docs/PHASE5.md.                     │
               └──────────────────────────────────────────┘
 ```
 
@@ -63,6 +64,7 @@
 | **AI**   | `backend/circuitBreaker.js` | Three-state (closed/open/half-open) breaker around the LLM backend, with `execStream` for async iterators. |
 | **AI**   | `backend/healthCheck.js` | Probe runner + status aggregator for the daemon's `/health` endpoint. |
 | **AI**   | `backend/a2aLog.js` | Append-only JSONL audit log for every emitted A2A mutation. Batched writes, size-based rotation, replay across files. |
+| **AI**   | `backend/a2aBridge.js` | WebSocket server that fans out `A2AAction` events to subscribed frontends with replay-on-reconnect and ack-based idempotency. Port 3002. See [`docs/PHASE5.md`](./docs/PHASE5.md). |
 | **Data** | `backend/h3.js` | Lightweight H3-style spatial indexer (drop-in compatible with `h3-js`). |
 | **Data** | `backend/vesselAgentAdapter.js` | Anti-corruption layer: normalizes Signal K + vessel-agent `core_anchor` JSON into a canonical `TrinityFrame`. |
 | **Test** | `tests/pipeline.test.js` | End-to-end Phase 1 verification (streamer + ingest + ring buffer). |
