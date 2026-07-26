@@ -214,9 +214,11 @@ run("a2aQuery", async () => {
       // Write 3 NON-OVERLAPPING files in REVERSE mtime order to confirm
       // mtime (not filename) drives the iteration order. Each file holds
       // a unique subset; the concatenated count must equal the total.
-      writeLog(dir, records.slice(7, 10), { mtimeMs: baseMs + 200 }); // 3
-      writeLog(dir, records.slice(3, 7),  { mtimeMs: baseMs + 100 }); // 4
-      writeLog(dir, records.slice(0, 3),  { mtimeMs: baseMs });       // 3
+      // Each call must use a unique `timestamp` so the filenames don't
+      // collide and overwrite each other.
+      writeLog(dir, records.slice(7, 10), { mtimeMs: baseMs + 200, timestamp: "2026-07-25T12:00:00.200Z" }); // 3
+      writeLog(dir, records.slice(3, 7),  { mtimeMs: baseMs + 100, timestamp: "2026-07-25T12:00:00.100Z" }); // 4
+      writeLog(dir, records.slice(0, 3),  { mtimeMs: baseMs,       timestamp: "2026-07-25T12:00:00.000Z" }); // 3
 
       const q = new A2aQuery({ dir });
       const out = await q.query();

@@ -3,7 +3,7 @@
   "$id": "https://github.com/SuperInstance/trinity-marine-station/blob/main/docs/STATUS.json",
   "title": "Trinity Marine Station - Project Status Manifest",
   "description": "Agentic-first marine navigation station. Real-time ingestion of vessel telemetry, JEPA-style anomaly detection, local LLM narration, and a WebSocket A2A bridge to a future Eclipse Theia workspace.",
-  "generated_at": "2026-07-26T21:04:12.450Z",
+  "generated_at": "2026-07-26T21:23:11.119Z",
   "_comment": "Update 'generated_at' whenever this file is edited. Update 'commit' to the latest shipped commit hash (HEAD on main, when working tree is clean).",
   "name": "trinity-marine-station",
   "display_name": "Trinity Marine Station",
@@ -15,7 +15,7 @@
     "role": "L0/L1 data capture (NMEA, acoustic, catch); upstream of Trinity's L2 cognitive layer"
   },
   "license": "private (no license declared yet)",
-  "commit": "7e8ddf2c2365c40fe65c5856a339adaef5deb2d8",
+  "commit": "d27be626b80198c9e2e83c037dd3e3c9582acc32",
   "branch": "main",
   "node_version_required": ">=18.0.0",
   "language": "JavaScript (Node.js, plain JS with JSDoc; no build step)",
@@ -623,7 +623,7 @@
         "file": "tests/a2aQuery.test.js",
         "assertions": 38,
         "covers": "read-side query layer (filters, countBy, topBy, bucketBy, summary)",
-        "lines": 546
+        "lines": 548
       },
       {
         "file": "tests/circuitBreaker.test.js",
@@ -828,6 +828,43 @@
       "blocks": "production-grade spatial indexing"
     }
   ],
+  "phase_7_candidates": [
+    {
+      "title": "Watcher pattern (deterministic fast-path A2A)",
+      "value": "highest",
+      "why": "Threshold-based event emission bypasses LLM for obvious cases. Borrowed from AELMA 'Watcher NPCs'. ~150 LOC.",
+      "blocks": "LLM latency for high-frequency cases",
+      "source": "docs/AELMA_SYNTHESIS.md"
+    },
+    {
+      "title": "predict(counterfactual) on JEPA world model",
+      "value": "high",
+      "why": "'Divination' — returns expected trajectory delta for a hypothetical action without committing. ~200 LOC.",
+      "blocks": "what-if reasoning in narrator",
+      "source": "docs/AELMA_SYNTHESIS.md"
+    },
+    {
+      "title": "Spatial layer (scene graph of physical components)",
+      "value": "high",
+      "why": "Zone-based query API for spatial relationships (engine room + 1.2ft from hydraulic line). ~300 LOC. No new deps; h3 present.",
+      "blocks": "spatial grounding for LLM reasoning",
+      "source": "docs/AELMA_SYNTHESIS.md"
+    },
+    {
+      "title": "A2A action parameter schemas",
+      "value": "medium",
+      "why": "Each allowed action gets parameters block + LLM tool-calling integration. ~250 LOC.",
+      "blocks": "LLM-proposed A2A actions",
+      "source": "docs/AELMA_SYNTHESIS.md"
+    },
+    {
+      "title": "Replay UI primitives",
+      "value": "low",
+      "why": "Server-side endpoint streaming a2aQuery results as time-bucketed WS frames for a trip-timeline UI. Cross-repo (Theia).",
+      "blocks": "consumer-facing playback UX",
+      "source": "docs/AELMA_SYNTHESIS.md"
+    }
+  ],
   "cross_references": {
     "root_agent_onboarding": "AGENTS.md",
     "phase_5_handover": "docs/PHASE5.md",
@@ -840,6 +877,8 @@
     "wire_protocol_quickref": "docs/a2a/QUICKREF.md",
     "this_status_manifest": "docs/STATUS.json",
     "mesh_test_report": "docs/MESH_TEST_REPORT.md",
-    "live_path_sequence": "docs/LIVE_PATH.md"
+    "live_path_sequence": "docs/LIVE_PATH.md",
+    "phase_6_handoff": "docs/PHASE6_HANDOFF.md",
+    "aelma_synthesis": "docs/AELMA_SYNTHESIS.md"
   }
 }

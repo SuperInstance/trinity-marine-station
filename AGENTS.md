@@ -307,6 +307,8 @@ If you are a future agent and need to pick one: **#1 (Theia extension)** closes 
 - `docs/AGENTS.md` (this round) — longer-form agent-oriented onboarding
 - `docs/STATUS.json` (this round) — machine-readable project state
 - `docs/MESH_TEST_REPORT.md` — last round's mesh-test findings (audits, what was verified)
+- `docs/PHASE6_HANDOFF.md` — cross-repo handoff for Phase 6 work (Theia, vessel-agent Python)
+- `docs/AELMA_SYNTHESIS.md` — mapping of the AELMA/VRDTA vision (Roblox-based) onto Trinity; identifies Phase 7+ candidates inferred from the gap analysis
 
 ---
 
