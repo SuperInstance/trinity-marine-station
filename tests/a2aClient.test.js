@@ -20,6 +20,8 @@
  *  14. Destroy cancels reconnect and closes socket
  *  15. Stats reflect activity
  *  16. lastAckedId field starts from constructor opt
+ *  17. Bounded replay: maxReplayBytes + onReplayOverflow + replay_truncated
+ *      (P6.2: protect clients reconnecting after long offline)
  * ----------------------------------------------------------------------------
  */
 
@@ -517,6 +519,258 @@ run("a2aClient", async () => {
       assertEq(s.acksSent, 2);
       assertEq(s.errors, 0);
 
+      await c.destroy();
+    } finally { await cleanup(); }
+  });
+
+  // -----------------------------------------------------------------------
+  // Bounded replay (P6.2): maxReplayBytes + onReplayOverflow + replay_truncated
+  //
+  // The client must not buffer an unbounded amount of replayed actions.
+  // When the cumulative byte size of replayed frames exceeds
+  // maxReplayBytes, the client drops further replayed actions, fires the
+  // `replay_truncated` event and the optional `onReplayOverflow` callback,
+  // and increments stats. Live actions after replay_end still flow normally.
+  // -----------------------------------------------------------------------
+  test("bounded replay: no truncation when under limit", async () => {
+    const dir = tmpLogDir();
+    const cleanup = async () => { try { await bridge.stop(); } catch {} try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} };
+    const core = fakeCore();
+    const log = new A2aLog({ dir, maxBytes: 1024 * 1024 });
+    const bridge = new A2aBridge({ core, a2aLog: log, host: "127.0.0.1", port: 0 });
+    try {
+      await bridge.start();
+      const port = bridge._wss._server.address().port;
+      // Use a small but realistic maxReplayBytes so the test stays fast.
+      const c = new A2aClient({
+        url: `ws://127.0.0.1:${port}`,
+        maxReplayBytes: 100 * 1024, // 100 KiB
+      });
+      await c.connect();
+      // No replay happened; counters stay at zero.
+      const s0 = c.stats();
+      assertEq(s0.replaysTruncated, 0);
+      assertEq(s0.replayBytesReceived, 0);
+      assertEq(s0.replayActionsTruncated, 0);
+      await c.destroy();
+    } finally { await cleanup(); }
+  });
+
+  test("bounded replay: truncation fires after exceeding limit", async () => {
+    const dir = tmpLogDir();
+    const cleanup = async () => { try { await bridge.stop(); } catch {} try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} };
+    const core = fakeCore();
+    const log = new A2aLog({ dir, maxBytes: 1024 * 1024 });
+    const bridge = new A2aBridge({ core, a2aLog: log, host: "127.0.0.1", port: 0 });
+    try {
+      await bridge.start();
+      const port = bridge._wss._server.address().port;
+      // Seed many large actions into the log so a replay will exceed a small limit.
+      for (let i = 0; i < 25; i++) {
+        core.emit("a2a", {
+          action: "announce",
+          reason: "X".repeat(200), // ~250 bytes per action once framed
+          priority: 0.5,
+        });
+      }
+      await log.flush();
+      // Tight limit: ~2 KiB — guaranteed to be exceeded by 25 actions.
+      let overflowInfo = null;
+      const c = new A2aClient({
+        url: `ws://127.0.0.1:${port}`,
+        maxReplayBytes: 2048,
+        onReplayOverflow: (info) => { overflowInfo = info; },
+      });
+      const truncatedP = new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error("replay_truncated never fired")), 5000);
+        c.once("replay_truncated", (info) => { clearTimeout(t); resolve(info); });
+      });
+      const replayEndP = new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error("replay_end never fired")), 5000);
+        c.once("replay_end", (env) => { clearTimeout(t); resolve(env); });
+      });
+      await c.connect();
+      // Manual replay covers actions 1..25.
+      c.requestReplay(0);
+      const [truncatedInfo, replayEndEnv] = await Promise.all([truncatedP, replayEndP]);
+      assertEq(truncatedInfo.limit, 2048);
+      assert(truncatedInfo.seenBytes >= 2048, `seenBytes ${truncatedInfo.seenBytes} should be >= 2048`);
+      assertEq(overflowInfo !== null, true, "onReplayOverflow callback must fire");
+      assertEq(overflowInfo.limit, 2048);
+      // replay_end envelope signals truncation to the application layer.
+      assertEq(replayEndEnv.truncated, true);
+      const s = c.stats();
+      assertEq(s.replaysTruncated, 1);
+      assert(s.replayActionsTruncated > 0, `expected some actions truncated, got ${s.replayActionsTruncated}`);
+      assert(s.replayBytesReceived >= 2048);
+      // State resets after replay_end: a fresh overflow callback has not yet fired.
+      assertEq(c._overflowSignalled, false);
+      await c.destroy();
+    } finally { await cleanup(); }
+  });
+
+  test("bounded replay: live actions resume after truncated replay", async () => {
+    const dir = tmpLogDir();
+    const cleanup = async () => { try { await bridge.stop(); } catch {} try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} };
+    const core = fakeCore();
+    const log = new A2aLog({ dir, maxBytes: 1024 * 1024 });
+    const bridge = new A2aBridge({ core, a2aLog: log, host: "127.0.0.1", port: 0 });
+    try {
+      await bridge.start();
+      const port = bridge._wss._server.address().port;
+      // Seed enough actions to overflow a tiny limit.
+      for (let i = 0; i < 10; i++) {
+        core.emit("a2a", {
+          action: "announce",
+          reason: "Y".repeat(200),
+          priority: 0.5,
+        });
+      }
+      await log.flush();
+      const c = new A2aClient({
+        url: `ws://127.0.0.1:${port}`,
+        maxReplayBytes: 1024, // 1 KiB
+      });
+      let truncated = false;
+      c.on("replay_truncated", () => { truncated = true; });
+      const replayEndP = new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error("replay_end never fired")), 5000);
+        c.once("replay_end", resolve);
+        c.once("replay_end", () => clearTimeout(t));
+      });
+      await c.connect();
+      c.requestReplay(0);
+      await replayEndP;
+      assertEq(truncated, true);
+      const liveActionP = once(c, "action", (e) => e.id > 10, 3000);
+      core.emit("a2a", { action: "raise_alert", reason: "live after truncation", priority: 0.7 });
+      const live = await liveActionP;
+      assertEq(live.action.action, "raise_alert");
+      assertEq(live.action.reason, "live after truncation");
+      await c.destroy();
+    } finally { await cleanup(); }
+  });
+
+  test("bounded replay: onReplayOverflow is one-shot", async () => {
+    const dir = tmpLogDir();
+    const cleanup = async () => { try { await bridge.stop(); } catch {} try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} };
+    const core = fakeCore();
+    const log = new A2aLog({ dir, maxBytes: 1024 * 1024 });
+    const bridge = new A2aBridge({ core, a2aLog: log, host: "127.0.0.1", port: 0 });
+    try {
+      await bridge.start();
+      const port = bridge._wss._server.address().port;
+      for (let i = 0; i < 15; i++) {
+        core.emit("a2a", { action: "announce", reason: "Z".repeat(300), priority: 0.5 });
+      }
+      await log.flush();
+      let overflowCalls = 0;
+      const c = new A2aClient({
+        url: `ws://127.0.0.1:${port}`,
+        maxReplayBytes: 1024,
+        onReplayOverflow: () => { overflowCalls++; },
+      });
+      const replayEndP = new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error("replay_end never fired")), 5000);
+        c.once("replay_end", () => { clearTimeout(t); resolve(); });
+      });
+      await c.connect();
+      c.requestReplay(0);
+      await replayEndP;
+      assertEq(overflowCalls, 1, "overflow callback must fire exactly once per replay window");
+      await c.destroy();
+    } finally { await cleanup(); }
+  });
+
+  test("bounded replay: Infinity disables truncation", async () => {
+    const dir = tmpLogDir();
+    const cleanup = async () => { try { await bridge.stop(); } catch {} try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} };
+    const core = fakeCore();
+    const log = new A2aLog({ dir, maxBytes: 1024 * 1024 });
+    const bridge = new A2aBridge({ core, a2aLog: log, host: "127.0.0.1", port: 0 });
+    try {
+      await bridge.start();
+      const port = bridge._wss._server.address().port;
+      for (let i = 0; i < 15; i++) {
+        core.emit("a2a", { action: "announce", reason: "W".repeat(500), priority: 0.5 });
+      }
+      await log.flush();
+      const c = new A2aClient({
+        url: `ws://127.0.0.1:${port}`,
+        maxReplayBytes: Infinity,
+      });
+      let truncated = false;
+      c.on("replay_truncated", () => { truncated = true; });
+      const replayEndP = new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error("replay_end never fired")), 5000);
+        c.once("replay_end", () => { clearTimeout(t); resolve(); });
+      });
+      await c.connect();
+      c.requestReplay(0);
+      await replayEndP;
+      assertEq(truncated, false);
+      const s = c.stats();
+      assertEq(s.replaysTruncated, 0);
+      assertEq(s.replayActionsTruncated, 0);
+      await c.destroy();
+    } finally { await cleanup(); }
+  });
+
+  test("bounded replay: counters reset between replay windows", async () => {
+    // Two consecutive replay windows must not share truncation state.
+    const dir = tmpLogDir();
+    const cleanup = async () => { try { await bridge.stop(); } catch {} try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} };
+    const core = fakeCore();
+    const log = new A2aLog({ dir, maxBytes: 1024 * 1024 });
+    const bridge = new A2aBridge({ core, a2aLog: log, host: "127.0.0.1", port: 0 });
+    try {
+      await bridge.start();
+      const port = bridge._wss._server.address().port;
+      // First batch — large enough to overflow 1 KiB.
+      for (let i = 0; i < 10; i++) {
+        core.emit("a2a", { action: "announce", reason: "V".repeat(300), priority: 0.5 });
+      }
+      await log.flush();
+      const c = new A2aClient({
+        url: `ws://127.0.0.1:${port}`,
+        maxReplayBytes: 1024,
+      });
+      const firstEndP = new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error("first replay_end never fired")), 5000);
+        c.once("replay_end", () => { clearTimeout(t); resolve(); });
+      });
+      await c.connect();
+      c.requestReplay(0);
+      await firstEndP;
+      assertEq(c.stats().replaysTruncated, 1);
+      // Second replay window — same client, smaller batch (under limit).
+      const c2 = new A2aClient({ url: `ws://127.0.0.1:${port}`, maxReplayBytes: 1024 });
+      await c2.connect();
+      const secondEndP = new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error("second replay_end never fired")), 5000);
+        c2.once("replay_end", () => { clearTimeout(t); resolve(); });
+      });
+      // Request replay since last id of first client (10).
+      c2.requestReplay(10);
+      await secondEndP;
+      assertEq(c2.stats().replaysTruncated, 0);
+      assertEq(c2.stats().replayActionsTruncated, 0);
+      await c.destroy();
+      await c2.destroy();
+    } finally { await cleanup(); }
+  });
+
+  test("bounded replay: default limit is 8 MiB", async () => {
+    const dir = tmpLogDir();
+    const cleanup = async () => { try { await bridge.stop(); } catch {} try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} };
+    const core = fakeCore();
+    const log = new A2aLog({ dir, maxBytes: 1024 * 1024 });
+    const bridge = new A2aBridge({ core, a2aLog: log, host: "127.0.0.1", port: 0 });
+    try {
+      await bridge.start();
+      const port = bridge._wss._server.address().port;
+      const c = new A2aClient({ url: `ws://127.0.0.1:${port}` });
+      assertEq(c._opts.maxReplayBytes, 8 * 1024 * 1024);
       await c.destroy();
     } finally { await cleanup(); }
   });

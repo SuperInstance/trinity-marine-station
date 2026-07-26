@@ -61,6 +61,10 @@ const DEFAULTS = Object.freeze({
   // If true, validate every incoming server frame. Tests may disable this
   // to inject malformed traffic on purpose.
   strict: true,
+  // Memory cap for a single replay-on-(re)connect gap-fill. Exceeding this
+  // stops accepting replayed actions (live ones still flow) and fires
+  // `replay_truncated`. Defaults to 8 MiB. Set to Infinity to disable.
+  maxReplayBytes: 8 * 1024 * 1024,
 });
 
 /**
@@ -104,6 +108,7 @@ const DEFAULTS = Object.freeze({
  *   "hello"           (env: HelloEnvelope)        — handshake received on (re)connect
  *   "action"          (env: ActionEnvelope)       — a live or replayed action arrived
  *   "replay_end"      (env: ReplayEndEnvelope)    — gap-fill completed
+ *   "replay_truncated"(info: {seenBytes, dropped}) — replay hit maxReplayBytes; dropped # of actions skipped
  *   "ack_ok"          (env: AckOkEnvelope)        — ack acknowledged by server
  *   "pong"            (env: PongEnvelope)          — pong received
  *   "error"           (Error | {code, errors})    — protocol / socket error
@@ -129,6 +134,10 @@ class A2aClient extends EventEmitter {
    * @param {number}  [opts.maxReconnectAttempts=Infinity]
    * @param {number}  [opts.helloTimeoutMs=5000]
    * @param {boolean} [opts.strict=true]          validate every server frame
+   * @param {number}  [opts.maxReplayBytes=8388608] memory cap for a single replay; Infinity to disable
+   * @param {(info: {seenBytes: number, dropped: number, limit: number}) => void} [opts.onReplayOverflow]
+   *   one-shot callback fired when the replay exceeds `maxReplayBytes`; further
+   *   replayed actions are skipped (live ones still flow)
    */
   constructor(opts = {}) {
     super();
@@ -152,10 +161,20 @@ class A2aClient extends EventEmitter {
     this._reconnectAttempt = 0;
     this._destroyed = false;
     this._inReplay = false;
+    // Bounded-replay state. Reset on every replay_end and at the start of
+    // every new replay (so reconnect-time replays don't share state with
+    // a previous one's overflow).
+    this._replayBytes = 0;
+    this._replayTruncated = false;
+    this._replayDropped = 0;
+    this._overflowSignalled = false;
 
     this._stats = {
       actionsReceived: 0,
       replaysDrained: 0,
+      replaysTruncated: 0,
+      replayBytesReceived: 0,
+      replayActionsTruncated: 0,
       acksSent: 0,
       reconnects: 0,
       errors: 0,
@@ -299,6 +318,13 @@ class A2aClient extends EventEmitter {
     if (!Number.isInteger(sinceId) || sinceId < 0) {
       throw new Error(`A2aClient.requestReplay: since_id must be a non-negative integer, got ${sinceId}`);
     }
+    // Reset bounded-replay state before asking the bridge for more — we
+    // want fresh counters for this window, not stale overflow from a prior
+    // replay that ended cleanly.
+    this._replayBytes = 0;
+    this._replayTruncated = false;
+    this._replayDropped = 0;
+    this._overflowSignalled = false;
     this._send({ type: "replay", since_id: sinceId });
     this._inReplay = true;
   }
@@ -396,6 +422,15 @@ class A2aClient extends EventEmitter {
         if (!msg.action || typeof msg.action !== "object") {
           throw new Error("A2aClient: action envelope missing 'action' object");
         }
+        // Bounded replay: if we exceeded maxReplayBytes during a replay,
+        // skip further replayed actions (live ones still flow). This
+        // protects a client reconnecting after a long offline from
+        // buffering megabytes before it can drain the backlog.
+        if (this._inReplay && this._replayTruncated) {
+          this._replayDropped++;
+          this._stats.replayActionsTruncated++;
+          break;
+        }
         const env = {
           type: "action",
           id: msg.id,
@@ -403,19 +438,62 @@ class A2aClient extends EventEmitter {
           ts: msg.ts,
         };
         this._stats.actionsReceived++;
+        // Count bytes during replay only — live action sizes are bounded by
+        // the bridge's own per-message limits, so there's nothing to bound
+        // from the client side.
+        if (this._inReplay) {
+          const size = Buffer.byteLength(
+            typeof raw === "string" ? raw : raw.toString(),
+            "utf8"
+          );
+          this._replayBytes += size;
+          this._stats.replayBytesReceived += size;
+          if (
+            this._inReplay
+            && !this._replayTruncated
+            && Number.isFinite(this._opts.maxReplayBytes)
+            && this._replayBytes > this._opts.maxReplayBytes
+          ) {
+            this._replayTruncated = true;
+            this._stats.replaysTruncated++;
+            const info = {
+              seenBytes: this._replayBytes,
+              dropped: this._replayDropped,
+              limit: this._opts.maxReplayBytes,
+            };
+            if (!this._overflowSignalled && typeof this._opts.onReplayOverflow === "function") {
+              this._overflowSignalled = true;
+              try { this._opts.onReplayOverflow(info); }
+              catch (err) {
+                this._stats.errors++;
+                this.emit("error", err);
+              }
+            }
+            this.emit("replay_truncated", info);
+          }
+        }
         this.emit("action", env);
         break;
       }
 
       case "replay_end": {
         if (this._inReplay) this._inReplay = false;
+        const truncated = this._replayTruncated;
         this._stats.replaysDrained++;
         const env = {
           type: "replay_end",
           replayed: Number.isInteger(msg.replayed) ? msg.replayed : 0,
           ts: msg.ts,
           reason: typeof msg.reason === "string" ? msg.reason : undefined,
+          truncated,
         };
+        // Reset bounded-replay state for the next replay window. Live
+        // actions between now and the next explicit `requestReplay()` are
+        // unaffected.
+        this._replayBytes = 0;
+        this._replayTruncated = false;
+        this._replayDropped = 0;
+        this._overflowSignalled = false;
         this.emit("replay_end", env);
         break;
       }
