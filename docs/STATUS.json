@@ -1,1 +1,772 @@
-{"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://github.com/SuperInstance/trinity-marine-station/blob/main/docs/STATUS.json", "title": "Trinity Marine Station - Project Status Manifest", "description": "Agentic-first marine navigation station. Real-time ingestion of vessel telemetry, JEPA-style anomaly detection, local LLM narration, and a WebSocket A2A bridge to a future Eclipse Theia workspace.", "generated_at": "2026-07-26T16:30:00.000Z", "_comment": "Update 'generated_at' whenever this file is edited. Update 'commit' to the latest shipped commit hash (HEAD on main, when working tree is clean).", "name": "trinity-marine-station", "display_name": "Trinity Marine Station", "homepage": "https://github.com/SuperInstance/trinity-marine-station", "sibling_repo": {"name": "vessel-agent", "url": "https://github.com/SuperInstance/vessel-agent", "language": "Python", "role": "L0/L1 data capture (NMEA, acoustic, catch); upstream of Trinity's L2 cognitive layer"}, "license": "private (no license declared yet)", "commit": "21ef1a6ff7ad5c1a1c40387ce4d53235054e92ee", "branch": "main", "node_version_required": ">=18.0.0", "language": "JavaScript (Node.js, plain JS with JSDoc; no build step)", "test_framework": "node:test (built-in)", "ports": {"3000": {"service": "mockSignalK", "protocol": "WebSocket", "purpose": "synthetic Signal K delta stream (development)", "started_by": "npm run streamer", "production": false}, "3002": {"service": "a2aBridge", "protocol": "WebSocket", "purpose": "A2A bridge fanout (validated workspace mutations to subscribers)", "started_by": "trinityDaemon", "env_var": "BRIDGE_PORT", "production": true}, "8787": {"service": "trinityDaemon ops HTTP", "protocol": "HTTP", "purpose": "ops endpoints: /health, /status", "started_by": "trinityDaemon", "env_var": "DAEMON_PORT", "production": true}, "11434": {"service": "Ollama", "protocol": "HTTP", "purpose": "local LLM backend (qwen3:4b, nomic-embed-text)", "started_by": "external (out of scope)", "production": false}}, "phases": {"1": {"title": "Sensory Ingestion Foundation", "status": "complete", "shipped": "2026-07-25", "modules": ["backend/marineConstants.js", "backend/navigationSimulator.js", "backend/mockSignalK.js", "backend/ringBuffer.js", "backend/telemetryIngest.js"]}, "2": {"title": "JEPA Cognitive Engine", "status": "complete", "shipped": "2026-07-25", "modules": ["backend/jepaWorldModel.js"]}, "3": {"title": "Conscious Narrator + A2A", "status": "complete", "shipped": "2026-07-25", "modules": ["backend/llmBackends.js", "backend/llmNarrator.js", "backend/trinityCore.js"]}, "3.5": {"title": "Daemon, Vector Store, Cloud Backend", "status": "complete", "shipped": "2026-07-25", "modules": ["backend/trinityDaemon.js", "backend/vectorStore.js", "backend/circuitBreaker.js", "backend/healthCheck.js"]}, "4": {"title": "vessel-agent Integration", "status": "complete", "shipped": "2026-07-25", "modules": ["backend/h3.js", "backend/vesselAgentAdapter.js"]}, "4.5": {"title": "A2A Audit Log", "status": "complete", "shipped": "2026-07-25", "modules": ["backend/a2aLog.js"]}, "5": {"title": "Theia Modular Workspace (A2A bridge)", "status": "in_progress", "shipped": "2026-07-26", "modules": ["backend/a2aBridge.js", "backend/a2aClient.js"], "remaining": ["frontend/ (Theia extension, TypeScript)"]}, "6": {"title": "unassigned", "status": "candidate", "candidates": ["Theia extension (TypeScript frontend that consumes the A2A bridge)", "Sync-then-broadcast bridge (durability fix for crash-recovery)", "Real vessel-agent Python WS bridge (publishes trinity delta at :3000)", "DuckDB read-side adapter for retrospective queries", "h3-js integration for production-grade H3"]}}, "modules": {"backend/a2aBridge.js": {"lines": 446, "phase": 5, "exports": ["A2aBridge"], "events_emitted": ["bridge:client_count", "bridge:stopped"], "deps_internal": ["backend/a2aLog.js", "backend/schemas.js", "shared/events.js"], "deps_external": ["ws"], "test_file": "tests/a2aBridge.test.js", "tests": 15, "purpose": "WebSocket server on port 3002. Validates A2AAction payloads, assigns monotonic ids, persists to A2aLog, broadcasts to all clients with replay/ack/ping/pong."}, "backend/a2aClient.js": {"lines": 457, "phase": 5, "exports": ["A2aClient"], "events_emitted": ["open", "hello", "action", "replay_end", "ack", "ack_ok", "pong", "error", "close", "stats"], "deps_internal": ["backend/schemas.js"], "deps_external": ["ws"], "test_file": "tests/a2aClient.test.js", "tests": 16, "purpose": "Typed WS client. Hello handshake, monotonic action IDs, auto-reconnect with exponential backoff, manual requestReplay, destroy."}, "backend/a2aLog.js": {"lines": 307, "phase": 4.5, "exports": ["A2aLog"], "deps_internal": [], "deps_external": ["fs/promises", "fs"], "test_file": "tests/a2aLog.test.js", "tests": 18, "purpose": "Append-only JSONL audit log. Batched writes, rotation, replay, persistence, ack checkpointing."}, "backend/vesselAgentAdapter.js": {"lines": 240, "phase": 4, "exports": ["normalize", "normalizeOrThrow"], "deps_internal": ["backend/schemas.js", "backend/h3.js"], "deps_external": [], "test_file": "tests/vesselAgentAdapter.test.js", "tests": 22, "purpose": "Anti-corruption layer. Normalizes Signal K deltas and vessel-agent core_anchor JSON into canonical TrinityFrame."}, "backend/trinityDaemon.js": {"lines": 488, "phase": 3.5, "exports": ["startDaemon", "tagged"], "deps_internal": ["backend/telemetryIngest.js", "backend/trinityCore.js", "backend/llmNarrator.js", "backend/a2aLog.js", "backend/a2aBridge.js", "backend/healthCheck.js", "backend/schemas.js"], "deps_external": ["ws", "http"], "test_file": "tests/daemon.test.js", "tests": 6, "purpose": "Production daemon. Wires ingest to JEPA to narrator to a2aLog to a2aBridge. Serves /health (liveness) and /status (snapshot). Reads all env vars."}, "backend/schemas.js": {"lines": 429, "phase": 1, "exports": ["validateTrinityFrame", "validateA2AAction", "validateJepaEnergyReading", "validateFeatureVector", "validateVesselAnchor", "validateTrinityDelta", "parseA2AClientMessage", "parseAndValidateA2A", "normalizeEnergyReading", "isPlausibleSignalKDelta", "makeLlmChunk", "isFiniteNumber", "isString", "isPlainObject", "FEATURE_VECTOR_INDEX", "A2A_ALLOWED_ACTIONS"], "deps_internal": ["shared/types.js"], "deps_external": [], "test_file": "tests/schemas.test.js", "tests": 36, "purpose": "Single source of truth for every wire shape. Validators throw on rejected input. Add new validators here."}, "backend/llmNarrator.js": {"lines": 523, "phase": 3, "exports": ["LlmNarrator"], "deps_internal": ["backend/schemas.js", "shared/events.js"], "deps_external": [], "test_file": "tests/trinityLifecycle.test.js", "tests": "part_of_9", "purpose": "Conscious narrator. Splits LLM stream into prose and <a2a>...</a2a> blocks. Throttled normal mode, instant emergency mode."}, "backend/jepaWorldModel.js": {"lines": 203, "phase": 2, "exports": ["JepaWorldModel"], "deps_internal": [], "deps_external": [], "test_file": "tests/trinityLifecycle.test.js", "tests": "part_of_9", "purpose": "Linear predictor over feature vectors. Emits energy score 0..1; >0.5 = anomaly."}, "backend/trinityCore.js": {"lines": 172, "phase": 3, "exports": ["TrinityCore"], "deps_internal": ["backend/jepaWorldModel.js", "backend/llmNarrator.js", "shared/events.js"], "deps_external": [], "test_file": "tests/trinityLifecycle.test.js", "tests": "part_of_9", "purpose": "Orchestrator. Polls ring buffer every 500ms, feeds JEPA, branches on energy (peaceful -> throttled narrator; anomaly -> emergency narrator)."}, "backend/llmBackends.js": {"lines": 558, "phase": 3, "exports": ["HttpLlmBackend", "OpenAiCompatibleBackend", "MockLlmBackend"], "deps_internal": [], "deps_external": ["http"], "test_file": "tests/openai.smoke.test.js", "tests": 6, "purpose": "Pluggable LlmBackend. HttpLlmBackend for local Ollama, OpenAiCompatibleBackend for cloud, MockLlmBackend for tests."}, "backend/telemetryIngest.js": {"lines": 323, "phase": 1, "exports": ["TelemetryIngest"], "deps_internal": ["backend/ringBuffer.js", "backend/schemas.js", "backend/marineConstants.js", "shared/events.js"], "deps_external": ["ws"], "test_file": "tests/pipeline.test.js", "tests": "part_of_11", "purpose": "WebSocket consumer. Connects to :3000, hello handshake, exponential backoff reconnect, parses deltas into feature vectors."}, "backend/ringBuffer.js": {"lines": 161, "phase": 1, "exports": ["TelemetryRingBuffer"], "deps_internal": [], "deps_external": [], "test_file": "tests/pipeline.test.js", "tests": "part_of_11", "purpose": "Pre-allocated Float64Array ring buffer (256 x 6 = 12 KB). Zero per-frame allocation."}, "backend/vectorStore.js": {"lines": 295, "phase": 3.5, "exports": ["VectorStore", "EmbeddingRetriever"], "deps_internal": [], "deps_external": [], "test_file": "tests/vectorStore.test.js", "tests": 18, "purpose": "In-memory Float32Array cosine/dot/L2 store. Auto-grows. EmbeddingRetriever wraps text queries with pluggable embedFn."}, "backend/circuitBreaker.js": {"lines": 277, "phase": 3.5, "exports": ["CircuitBreaker", "CircuitOpenError"], "deps_internal": [], "deps_external": [], "test_file": "tests/circuitBreaker.test.js", "tests": 20, "purpose": "3-state breaker (closed/open/half-open). exec() for sync, execStream() for async iterables. AbortSignal-aware."}, "backend/healthCheck.js": {"lines": 158, "phase": 3.5, "exports": ["runHealthChecks", "ringBufferProbe", "tcpReachableProbe", "ProbeTimeoutError"], "deps_internal": [], "deps_external": [], "test_file": "tests/healthCheck.test.js", "tests": 12, "purpose": "Probe runner + status aggregator. Bounded by probe timeout. Returns {status: ok|degraded|down, probes: [...]}"}, "backend/h3.js": {"lines": 173, "phase": 4, "exports": ["latLngToCell", "cellToLatLng", "haversineMeters"], "deps_internal": [], "deps_external": [], "test_file": "tests/h3.test.js", "tests": 17, "purpose": "Lightweight H3-style indexer (drop-in compatible with h3-js API). Quantized-grid approximation; replace with h3-js for production-grade."}, "backend/navigationSimulator.js": {"lines": 163, "phase": 1, "exports": ["NavigationSimulator"], "deps_internal": ["backend/marineConstants.js"], "deps_external": [], "test_file": "tests/pipeline.test.js", "tests": "part_of_11", "purpose": "Pure stateful world model. Lat/lon/heading/depth over the SF Bay trajectory. Transport-agnostic."}, "backend/mockSignalK.js": {"lines": 164, "phase": 1, "exports": ["startMockSignalK"], "deps_internal": ["backend/navigationSimulator.js"], "deps_external": ["ws"], "test_file": "tests/pipeline.test.js", "tests": "part_of_11", "purpose": "WebSocket broadcaster on ws://127.0.0.1:3000. 2 Hz. Synthetic Signal K deltas. Drop-in replacement for a real Signal K server."}, "backend/marineConstants.js": {"lines": 87, "phase": 1, "exports": ["SF_BAY_TRAJECTORY", "FEATURE_VECTOR_INDEX", "FEATURE_VECTOR_LENGTH"], "deps_internal": [], "deps_external": [], "test_file": "tests/schemas.test.js", "tests": "part_of_36", "purpose": "Single source of truth: SF Bay trajectory waypoints, depth field, feature-vector layout."}}, "tests": {"total_suites": 14, "total_assertions_approx": 225, "suites": [{"file": "tests/pipeline.test.js", "assertions": 11, "covers": "Phase 1 end-to-end"}, {"file": "tests/trinityLifecycle.test.js", "assertions": 9, "covers": "Phase 3 + live WS smoke"}, {"file": "tests/daemon.test.js", "assertions": 6, "covers": "daemon /health + /status"}, {"file": "tests/a2aBridge.test.js", "assertions": 15, "covers": "bridge wire protocol"}, {"file": "tests/a2aClient.test.js", "assertions": 16, "covers": "client reconnect + replay"}, {"file": "tests/a2aLog.test.js", "assertions": 18, "covers": "audit log persistence"}, {"file": "tests/circuitBreaker.test.js", "assertions": 20, "covers": "breaker state machine"}, {"file": "tests/healthCheck.test.js", "assertions": 12, "covers": "probe runner"}, {"file": "tests/h3.test.js", "assertions": 17, "covers": "H3 indexer accuracy"}, {"file": "tests/vesselAgentAdapter.test.js", "assertions": 22, "covers": "cross-system normalization"}, {"file": "tests/vectorStore.test.js", "assertions": 18, "covers": "vector store + retriever"}, {"file": "tests/schemas.test.js", "assertions": 36, "covers": "all validators"}, {"file": "tests/openai.smoke.test.js", "assertions": 6, "covers": "OpenAI-compat backend"}, {"file": "tests/ollama.smoke.test.js", "assertions": "live_or_skip", "covers": "live Ollama integration"}]}, "npm_scripts": {"test": "node tests/run.js", "test:a2abridge": "node tests/run.js a2aBridge.test.js", "test:a2aclient": "node tests/run.js a2aClient.test.js", "streamer": "node backend/mockSignalK.js", "ingest": "node backend/telemetryIngest.js", "narrator": "node backend/llmNarrator.js", "start": "node backend/trinityDaemon.js"}, "events": {"module": "shared/events.js", "names": ["ingest:open", "ingest:hello", "ingest:frame", "ingest:parse-error", "ingest:malformed", "ingest:reconnecting", "ingest:close", "ingest:error", "jepa:energy", "jepa:anomaly", "narrator:prose", "narrator:a2a", "narrator:malformed", "narrator:generation-start", "narrator:generation-end", "narrator:error", "narrator:degraded", "core:tick", "core:peaceful", "core:anomaly", "core:stopped", "daemon:lifecycle", "daemon:a2a", "crew:report", "fleet:report", "spatial:cell-change", "anomaly:classified", "workspace:morph"], "convention": "Use constants from shared/events.js, never string literals."}, "env_vars": {"MOCK_SIGNALK_PORT": {"default": 3000, "purpose": "mockSignalK bind port"}, "BRIDGE_HOST": {"default": "127.0.0.1", "purpose": "a2aBridge bind address"}, "BRIDGE_PORT": {"default": 3002, "purpose": "a2aBridge bind port"}, "BRIDGE_DISABLED": {"default": false, "purpose": "set to 1 to skip bridge startup"}, "DAEMON_PORT": {"default": 8787, "purpose": "trinityDaemon ops HTTP port"}, "A2A_LOG_DIR": {"default": "./logs/a2a", "purpose": "JSONL audit log directory"}, "A2A_LOG_MAX_BYTES": {"default": "10485760", "purpose": "rotate active file when exceeded"}, "A2A_LOG_DISABLED": {"default": false, "purpose": "set to 1 to skip persistence"}, "OLLAMA_HOST": {"default": "127.0.0.1", "purpose": "Ollama backend address"}, "OLLAMA_PORT": {"default": 11434, "purpose": "Ollama backend port"}, "CLOUD_LLM_BASE_URL": {"default": null, "purpose": "if set, use OpenAiCompatibleBackend"}}, "lint": {"tool": "node tools/lint.js", "files_scanned": 39, "policy": "console.log forbidden in non-CLI backend modules (allow-list: mockSignalK.js, telemetryIngest.js, llmNarrator.js, trinityDaemon.js). console.warn and console.error permitted elsewhere."}, "gotchas": ["The bridge still broadcasts before the log write resolves (a2aLog.append is fire-and-forget for latency). Documented in docs/PHASE5.md §6.", "Use opts.port ?? DEFAULT_PORT, not opts.port || DEFAULT_PORT. Otherwise port: 0 is silently rewritten.", "PowerShell does not support &&. Use ; or run commands in separate calls.", "daemon.test.js teardown requires bridge.stop() to prevent event loop hang.", "Unicode characters in record_note payloads break on Windows (charmap encoding). Use ASCII.", "A2aLog is durable across instances; '_listLogFiles()' reads the entire directory.", "Sub-second GPS interpolation belongs to vessel-agent (Python), not Trinity.", "Lint forbids console.log in most backend modules. Allow-list: mockSignalK, telemetryIngest, llmNarrator, trinityDaemon.", "Don't add a TypeScript build step. Plain JS + JSDoc only. Theia is the only TS allowed.", "Every event name must come from shared/events.js. Never string literals."], "phase_6_candidates": [{"title": "Theia extension", "value": "highest", "why": "Closes the L3 -> L4 loop. The bridge fans out but no UI listens. ~200 LOC TS.", "blocks": "operator visibility"}, {"title": "Sync-then-broadcast bridge", "value": "high", "why": "Crash-recovery correctness. Trades ~5ms latency for durability. ~30 LOC.", "blocks": "production-grade reliability"}, {"title": "Real vessel-agent Python WS bridge", "value": "medium", "why": "Replaces the mock with the real upstream. ~80 LOC Python.", "blocks": "real-vessel testing"}, {"title": "DuckDB read-side adapter", "value": "medium", "why": "Retrospective queries against archived features. ~150 LOC.", "blocks": "back-in-time analysis"}, {"title": "h3-js integration", "value": "low", "why": "Drop-in replacement for the quantized-grid approximation. ~50 LOC.", "blocks": "production-grade spatial indexing"}], "cross_references": {"root_agent_onboarding": "AGENTS.md", "phase_5_handover": "docs/PHASE5.md", "vessel_agent_integration": "docs/SYNERGY.md", "design_rationale": "docs/ARCHITECTURE.md", "run_time_ops": "docs/OPERATIONS.md", "test_strategy": "docs/TESTING.md", "wire_protocol_schema": "docs/a2a/SCHEMA.json", "wire_protocol_examples": "docs/a2a/EXAMPLES.jsonl", "wire_protocol_quickref": "docs/a2a/QUICKREF.md", "this_status_manifest": "docs/STATUS.json"}}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SuperInstance/trinity-marine-station/blob/main/docs/STATUS.json",
+  "title": "Trinity Marine Station - Project Status Manifest",
+  "description": "Agentic-first marine navigation station. Real-time ingestion of vessel telemetry, JEPA-style anomaly detection, local LLM narration, and a WebSocket A2A bridge to a future Eclipse Theia workspace.",
+  "generated_at": "2026-07-26T18:28:37.248Z",
+  "_comment": "Update 'generated_at' whenever this file is edited. Update 'commit' to the latest shipped commit hash (HEAD on main, when working tree is clean).",
+  "name": "trinity-marine-station",
+  "display_name": "Trinity Marine Station",
+  "homepage": "https://github.com/SuperInstance/trinity-marine-station",
+  "sibling_repo": {
+    "name": "vessel-agent",
+    "url": "https://github.com/SuperInstance/vessel-agent",
+    "language": "Python",
+    "role": "L0/L1 data capture (NMEA, acoustic, catch); upstream of Trinity's L2 cognitive layer"
+  },
+  "license": "private (no license declared yet)",
+  "commit": "808dcaa186a9c7e83963444e313c4eef047d60d2",
+  "branch": "main",
+  "node_version_required": ">=18.0.0",
+  "language": "JavaScript (Node.js, plain JS with JSDoc; no build step)",
+  "test_framework": "node:test (built-in)",
+  "ports": {
+    "3000": {
+      "service": "mockSignalK",
+      "protocol": "WebSocket",
+      "purpose": "synthetic Signal K delta stream (development)",
+      "started_by": "npm run streamer",
+      "production": false
+    },
+    "3002": {
+      "service": "a2aBridge",
+      "protocol": "WebSocket",
+      "purpose": "A2A bridge fanout (validated workspace mutations to subscribers)",
+      "started_by": "trinityDaemon",
+      "env_var": "BRIDGE_PORT",
+      "production": true
+    },
+    "8787": {
+      "service": "trinityDaemon ops HTTP",
+      "protocol": "HTTP",
+      "purpose": "ops endpoints: /health, /status",
+      "started_by": "trinityDaemon",
+      "env_var": "DAEMON_PORT",
+      "production": true
+    },
+    "11434": {
+      "service": "Ollama",
+      "protocol": "HTTP",
+      "purpose": "local LLM backend (qwen3:4b, nomic-embed-text)",
+      "started_by": "external (out of scope)",
+      "production": false
+    }
+  },
+  "phases": {
+    "1": {
+      "title": "Sensory Ingestion Foundation",
+      "status": "complete",
+      "shipped": "2026-07-25",
+      "modules": [
+        "backend/marineConstants.js",
+        "backend/navigationSimulator.js",
+        "backend/mockSignalK.js",
+        "backend/ringBuffer.js",
+        "backend/telemetryIngest.js"
+      ]
+    },
+    "2": {
+      "title": "JEPA Cognitive Engine",
+      "status": "complete",
+      "shipped": "2026-07-25",
+      "modules": [
+        "backend/jepaWorldModel.js"
+      ]
+    },
+    "3": {
+      "title": "Conscious Narrator + A2A",
+      "status": "complete",
+      "shipped": "2026-07-25",
+      "modules": [
+        "backend/llmBackends.js",
+        "backend/llmNarrator.js",
+        "backend/trinityCore.js"
+      ]
+    },
+    "4": {
+      "title": "vessel-agent Integration",
+      "status": "complete",
+      "shipped": "2026-07-25",
+      "modules": [
+        "backend/h3.js",
+        "backend/vesselAgentAdapter.js"
+      ]
+    },
+    "5": {
+      "title": "Theia Modular Workspace (A2A bridge)",
+      "status": "in_progress",
+      "shipped": "2026-07-26",
+      "modules": [
+        "backend/a2aBridge.js",
+        "backend/a2aClient.js"
+      ],
+      "remaining": [
+        "frontend/ (Theia extension, TypeScript)"
+      ]
+    },
+    "6": {
+      "title": "unassigned",
+      "status": "candidate",
+      "candidates": [
+        "Theia extension (TypeScript frontend that consumes the A2A bridge)",
+        "Sync-then-broadcast bridge (durability fix for crash-recovery)",
+        "Real vessel-agent Python WS bridge (publishes trinity delta at :3000)",
+        "DuckDB read-side adapter for retrospective queries",
+        "h3-js integration for production-grade H3"
+      ]
+    },
+    "3.5": {
+      "title": "Daemon, Vector Store, Cloud Backend",
+      "status": "complete",
+      "shipped": "2026-07-25",
+      "modules": [
+        "backend/trinityDaemon.js",
+        "backend/vectorStore.js",
+        "backend/circuitBreaker.js",
+        "backend/healthCheck.js"
+      ]
+    },
+    "4.5": {
+      "title": "A2A Audit Log",
+      "status": "complete",
+      "shipped": "2026-07-25",
+      "modules": [
+        "backend/a2aLog.js"
+      ]
+    }
+  },
+  "modules": {
+    "backend/a2aBridge.js": {
+      "lines": 492,
+      "phase": 5,
+      "exports": [
+        "A2aBridge"
+      ],
+      "events_emitted": [
+        "bridge:client_count",
+        "bridge:stopped"
+      ],
+      "deps_internal": [
+        "backend/a2aLog.js",
+        "backend/schemas.js",
+        "shared/events.js"
+      ],
+      "deps_external": [
+        "ws"
+      ],
+      "test_file": "tests/a2aBridge.test.js",
+      "tests": 15,
+      "purpose": "WebSocket server on port 3002. Validates A2AAction payloads, assigns monotonic ids, persists to A2aLog, broadcasts to all clients with replay/ack/ping/pong."
+    },
+    "backend/a2aClient.js": {
+      "lines": 492,
+      "phase": 5,
+      "exports": [
+        "A2aClient"
+      ],
+      "events_emitted": [
+        "open",
+        "hello",
+        "action",
+        "replay_end",
+        "ack",
+        "ack_ok",
+        "pong",
+        "error",
+        "close",
+        "stats"
+      ],
+      "deps_internal": [
+        "backend/schemas.js"
+      ],
+      "deps_external": [
+        "ws"
+      ],
+      "test_file": "tests/a2aClient.test.js",
+      "tests": 16,
+      "purpose": "Typed WS client. Hello handshake, monotonic action IDs, auto-reconnect with exponential backoff, manual requestReplay, destroy."
+    },
+    "backend/a2aLog.js": {
+      "lines": 345,
+      "phase": 4.5,
+      "exports": [
+        "A2aLog"
+      ],
+      "deps_internal": [],
+      "deps_external": [
+        "fs/promises",
+        "fs"
+      ],
+      "test_file": "tests/a2aLog.test.js",
+      "tests": 18,
+      "purpose": "Append-only JSONL audit log. Batched writes, rotation, replay, persistence, ack checkpointing."
+    },
+    "backend/vesselAgentAdapter.js": {
+      "lines": 271,
+      "phase": 4,
+      "exports": [
+        "normalize",
+        "normalizeOrThrow"
+      ],
+      "deps_internal": [
+        "backend/schemas.js",
+        "backend/h3.js"
+      ],
+      "deps_external": [],
+      "test_file": "tests/vesselAgentAdapter.test.js",
+      "tests": 22,
+      "purpose": "Anti-corruption layer. Normalizes Signal K deltas and vessel-agent core_anchor JSON into canonical TrinityFrame."
+    },
+    "backend/trinityDaemon.js": {
+      "lines": 538,
+      "phase": 3.5,
+      "exports": [
+        "startDaemon",
+        "tagged"
+      ],
+      "deps_internal": [
+        "backend/telemetryIngest.js",
+        "backend/trinityCore.js",
+        "backend/llmNarrator.js",
+        "backend/a2aLog.js",
+        "backend/a2aBridge.js",
+        "backend/healthCheck.js",
+        "backend/schemas.js"
+      ],
+      "deps_external": [
+        "ws",
+        "http"
+      ],
+      "test_file": "tests/daemon.test.js",
+      "tests": 6,
+      "purpose": "Production daemon. Wires ingest to JEPA to narrator to a2aLog to a2aBridge. Serves /health (liveness) and /status (snapshot). Reads all env vars."
+    },
+    "backend/schemas.js": {
+      "lines": 464,
+      "phase": 1,
+      "exports": [
+        "validateTrinityFrame",
+        "validateA2AAction",
+        "validateJepaEnergyReading",
+        "validateFeatureVector",
+        "validateVesselAnchor",
+        "validateTrinityDelta",
+        "parseA2AClientMessage",
+        "parseAndValidateA2A",
+        "normalizeEnergyReading",
+        "isPlausibleSignalKDelta",
+        "makeLlmChunk",
+        "isFiniteNumber",
+        "isString",
+        "isPlainObject",
+        "FEATURE_VECTOR_INDEX",
+        "A2A_ALLOWED_ACTIONS"
+      ],
+      "deps_internal": [
+        "shared/types.js"
+      ],
+      "deps_external": [],
+      "test_file": "tests/schemas.test.js",
+      "tests": 36,
+      "purpose": "Single source of truth for every wire shape. Validators throw on rejected input. Add new validators here."
+    },
+    "backend/llmNarrator.js": {
+      "lines": 577,
+      "phase": 3,
+      "exports": [
+        "LlmNarrator"
+      ],
+      "deps_internal": [
+        "backend/schemas.js",
+        "shared/events.js"
+      ],
+      "deps_external": [],
+      "test_file": "tests/trinityLifecycle.test.js",
+      "tests": "part_of_9",
+      "purpose": "Conscious narrator. Splits LLM stream into prose and <a2a>...</a2a> blocks. Throttled normal mode, instant emergency mode."
+    },
+    "backend/jepaWorldModel.js": {
+      "lines": 231,
+      "phase": 2,
+      "exports": [
+        "JepaWorldModel"
+      ],
+      "deps_internal": [],
+      "deps_external": [],
+      "test_file": "tests/trinityLifecycle.test.js",
+      "tests": "part_of_9",
+      "purpose": "Linear predictor over feature vectors. Emits energy score 0..1; >0.5 = anomaly."
+    },
+    "backend/trinityCore.js": {
+      "lines": 192,
+      "phase": 3,
+      "exports": [
+        "TrinityCore"
+      ],
+      "deps_internal": [
+        "backend/jepaWorldModel.js",
+        "backend/llmNarrator.js",
+        "shared/events.js"
+      ],
+      "deps_external": [],
+      "test_file": "tests/trinityLifecycle.test.js",
+      "tests": "part_of_9",
+      "purpose": "Orchestrator. Polls ring buffer every 500ms, feeds JEPA, branches on energy (peaceful -> throttled narrator; anomaly -> emergency narrator)."
+    },
+    "backend/llmBackends.js": {
+      "lines": 608,
+      "phase": 3,
+      "exports": [
+        "HttpLlmBackend",
+        "OpenAiCompatibleBackend",
+        "MockLlmBackend"
+      ],
+      "deps_internal": [],
+      "deps_external": [
+        "http"
+      ],
+      "test_file": "tests/openai.smoke.test.js",
+      "tests": 6,
+      "purpose": "Pluggable LlmBackend. HttpLlmBackend for local Ollama, OpenAiCompatibleBackend for cloud, MockLlmBackend for tests."
+    },
+    "backend/telemetryIngest.js": {
+      "lines": 374,
+      "phase": 1,
+      "exports": [
+        "TelemetryIngest"
+      ],
+      "deps_internal": [
+        "backend/ringBuffer.js",
+        "backend/schemas.js",
+        "backend/marineConstants.js",
+        "shared/events.js"
+      ],
+      "deps_external": [
+        "ws"
+      ],
+      "test_file": "tests/pipeline.test.js",
+      "tests": "part_of_11",
+      "purpose": "WebSocket consumer. Connects to :3000, hello handshake, exponential backoff reconnect, parses deltas into feature vectors."
+    },
+    "backend/ringBuffer.js": {
+      "lines": 183,
+      "phase": 1,
+      "exports": [
+        "TelemetryRingBuffer"
+      ],
+      "deps_internal": [],
+      "deps_external": [],
+      "test_file": "tests/pipeline.test.js",
+      "tests": "part_of_11",
+      "purpose": "Pre-allocated Float64Array ring buffer (256 x 6 = 12 KB). Zero per-frame allocation."
+    },
+    "backend/vectorStore.js": {
+      "lines": 321,
+      "phase": 3.5,
+      "exports": [
+        "VectorStore",
+        "EmbeddingRetriever"
+      ],
+      "deps_internal": [],
+      "deps_external": [],
+      "test_file": "tests/vectorStore.test.js",
+      "tests": 18,
+      "purpose": "In-memory Float32Array cosine/dot/L2 store. Auto-grows. EmbeddingRetriever wraps text queries with pluggable embedFn."
+    },
+    "backend/circuitBreaker.js": {
+      "lines": 295,
+      "phase": 3.5,
+      "exports": [
+        "CircuitBreaker",
+        "CircuitOpenError"
+      ],
+      "deps_internal": [],
+      "deps_external": [],
+      "test_file": "tests/circuitBreaker.test.js",
+      "tests": 20,
+      "purpose": "3-state breaker (closed/open/half-open). exec() for sync, execStream() for async iterables. AbortSignal-aware."
+    },
+    "backend/healthCheck.js": {
+      "lines": 173,
+      "phase": 3.5,
+      "exports": [
+        "runHealthChecks",
+        "ringBufferProbe",
+        "tcpReachableProbe",
+        "ProbeTimeoutError"
+      ],
+      "deps_internal": [],
+      "deps_external": [],
+      "test_file": "tests/healthCheck.test.js",
+      "tests": 12,
+      "purpose": "Probe runner + status aggregator. Bounded by probe timeout. Returns {status: ok|degraded|down, probes: [...]}"
+    },
+    "backend/h3.js": {
+      "lines": 196,
+      "phase": 4,
+      "exports": [
+        "latLngToCell",
+        "cellToLatLng",
+        "haversineMeters"
+      ],
+      "deps_internal": [],
+      "deps_external": [],
+      "test_file": "tests/h3.test.js",
+      "tests": 17,
+      "purpose": "Lightweight H3-style indexer (drop-in compatible with h3-js API). Quantized-grid approximation; replace with h3-js for production-grade."
+    },
+    "backend/navigationSimulator.js": {
+      "lines": 185,
+      "phase": 1,
+      "exports": [
+        "NavigationSimulator"
+      ],
+      "deps_internal": [
+        "backend/marineConstants.js"
+      ],
+      "deps_external": [],
+      "test_file": "tests/pipeline.test.js",
+      "tests": "part_of_11",
+      "purpose": "Pure stateful world model. Lat/lon/heading/depth over the SF Bay trajectory. Transport-agnostic."
+    },
+    "backend/mockSignalK.js": {
+      "lines": 184,
+      "phase": 1,
+      "exports": [
+        "startMockSignalK"
+      ],
+      "deps_internal": [
+        "backend/navigationSimulator.js"
+      ],
+      "deps_external": [
+        "ws"
+      ],
+      "test_file": "tests/pipeline.test.js",
+      "tests": "part_of_11",
+      "purpose": "WebSocket broadcaster on ws://127.0.0.1:3000. 2 Hz. Synthetic Signal K deltas. Drop-in replacement for a real Signal K server."
+    },
+    "backend/marineConstants.js": {
+      "lines": 98,
+      "phase": 1,
+      "exports": [
+        "SF_BAY_TRAJECTORY",
+        "FEATURE_VECTOR_INDEX",
+        "FEATURE_VECTOR_LENGTH"
+      ],
+      "deps_internal": [],
+      "deps_external": [],
+      "test_file": "tests/schemas.test.js",
+      "tests": "part_of_36",
+      "purpose": "Single source of truth: SF Bay trajectory waypoints, depth field, feature-vector layout."
+    },
+    "tools/auditLinks.js": {
+      "lines": 136,
+      "phase": "5+",
+      "exports": [
+        "main"
+      ],
+      "deps_internal": [],
+      "deps_external": [
+        "fs",
+        "path"
+      ],
+      "purpose": "Cross-doc link auditor. Walks every .md/.json/.jsonl file and verifies relative paths resolve."
+    },
+    "tools/auditStatus.js": {
+      "lines": 84,
+      "phase": "5+",
+      "exports": [
+        "main"
+      ],
+      "deps_internal": [],
+      "deps_external": [
+        "fs",
+        "path",
+        "child_process"
+      ],
+      "purpose": "STATUS.json integrity auditor. Verifies commit, branch, line counts, and cross-references match the live repo."
+    },
+    "tools/auditRequires.js": {
+      "lines": 70,
+      "phase": "5+",
+      "exports": [
+        "main"
+      ],
+      "deps_internal": [],
+      "deps_external": [
+        "fs",
+        "path"
+      ],
+      "purpose": "Module resolution auditor. Resolves every require() in backend/ and tests/ to confirm the target file exists."
+    },
+    "tools/regenStatus.js": {
+      "lines": 103,
+      "phase": "5+",
+      "exports": [
+        "main"
+      ],
+      "deps_internal": [],
+      "deps_external": [
+        "fs",
+        "path",
+        "child_process"
+      ],
+      "purpose": "Regenerates docs/STATUS.json from the live repo state (commit hash + line counts)."
+    },
+    "tools/smokeDaemon.js": {
+      "lines": 104,
+      "phase": "5+",
+      "exports": [
+        "main"
+      ],
+      "deps_internal": [],
+      "deps_external": [
+        "http",
+        "child_process",
+        "path"
+      ],
+      "purpose": "Daemon end-to-end smoke test. Boots trinityDaemon, hits /health + /status, asserts a2aBridge section, graceful shutdown."
+    }
+  },
+  "tests": {
+    "total_suites": 14,
+    "total_assertions_approx": 225,
+    "suites": [
+      {
+        "file": "tests/pipeline.test.js",
+        "assertions": 11,
+        "covers": "Phase 1 end-to-end",
+        "lines": 303
+      },
+      {
+        "file": "tests/trinityLifecycle.test.js",
+        "assertions": 9,
+        "covers": "Phase 3 + live WS smoke",
+        "lines": 305
+      },
+      {
+        "file": "tests/daemon.test.js",
+        "assertions": 6,
+        "covers": "daemon /health + /status",
+        "lines": 254
+      },
+      {
+        "file": "tests/a2aBridge.test.js",
+        "assertions": 15,
+        "covers": "bridge wire protocol",
+        "lines": 484
+      },
+      {
+        "file": "tests/a2aClient.test.js",
+        "assertions": 16,
+        "covers": "client reconnect + replay",
+        "lines": 524
+      },
+      {
+        "file": "tests/a2aLog.test.js",
+        "assertions": 18,
+        "covers": "audit log persistence",
+        "lines": 390
+      },
+      {
+        "file": "tests/circuitBreaker.test.js",
+        "assertions": 20,
+        "covers": "breaker state machine",
+        "lines": 315
+      },
+      {
+        "file": "tests/healthCheck.test.js",
+        "assertions": 12,
+        "covers": "probe runner",
+        "lines": 164
+      },
+      {
+        "file": "tests/h3.test.js",
+        "assertions": 17,
+        "covers": "H3 indexer accuracy",
+        "lines": 158
+      },
+      {
+        "file": "tests/vesselAgentAdapter.test.js",
+        "assertions": 22,
+        "covers": "cross-system normalization",
+        "lines": 283
+      },
+      {
+        "file": "tests/vectorStore.test.js",
+        "assertions": 18,
+        "covers": "vector store + retriever",
+        "lines": 185
+      },
+      {
+        "file": "tests/schemas.test.js",
+        "assertions": 36,
+        "covers": "all validators",
+        "lines": 244
+      },
+      {
+        "file": "tests/openai.smoke.test.js",
+        "assertions": 6,
+        "covers": "OpenAI-compat backend",
+        "lines": 177
+      },
+      {
+        "file": "tests/ollama.smoke.test.js",
+        "assertions": "live_or_skip",
+        "covers": "live Ollama integration",
+        "lines": 286
+      }
+    ]
+  },
+  "npm_scripts": {
+    "test": "node tests/run.js",
+    "test:a2abridge": "node tests/run.js a2aBridge.test.js",
+    "test:a2aclient": "node tests/run.js a2aClient.test.js",
+    "streamer": "node backend/mockSignalK.js",
+    "ingest": "node backend/telemetryIngest.js",
+    "narrator": "node backend/llmNarrator.js",
+    "start": "node backend/trinityDaemon.js"
+  },
+  "events": {
+    "module": "shared/events.js",
+    "names": [
+      "ingest:open",
+      "ingest:hello",
+      "ingest:frame",
+      "ingest:parse-error",
+      "ingest:malformed",
+      "ingest:reconnecting",
+      "ingest:close",
+      "ingest:error",
+      "jepa:energy",
+      "jepa:anomaly",
+      "narrator:prose",
+      "narrator:a2a",
+      "narrator:malformed",
+      "narrator:generation-start",
+      "narrator:generation-end",
+      "narrator:error",
+      "narrator:degraded",
+      "core:tick",
+      "core:peaceful",
+      "core:anomaly",
+      "core:stopped",
+      "daemon:lifecycle",
+      "daemon:a2a",
+      "crew:report",
+      "fleet:report",
+      "spatial:cell-change",
+      "anomaly:classified",
+      "workspace:morph"
+    ],
+    "convention": "Use constants from shared/events.js, never string literals."
+  },
+  "env_vars": {
+    "MOCK_SIGNALK_PORT": {
+      "default": 3000,
+      "purpose": "mockSignalK bind port"
+    },
+    "BRIDGE_HOST": {
+      "default": "127.0.0.1",
+      "purpose": "a2aBridge bind address"
+    },
+    "BRIDGE_PORT": {
+      "default": 3002,
+      "purpose": "a2aBridge bind port"
+    },
+    "BRIDGE_DISABLED": {
+      "default": false,
+      "purpose": "set to 1 to skip bridge startup"
+    },
+    "DAEMON_PORT": {
+      "default": 8787,
+      "purpose": "trinityDaemon ops HTTP port"
+    },
+    "A2A_LOG_DIR": {
+      "default": "./logs/a2a",
+      "purpose": "JSONL audit log directory"
+    },
+    "A2A_LOG_MAX_BYTES": {
+      "default": "10485760",
+      "purpose": "rotate active file when exceeded"
+    },
+    "A2A_LOG_DISABLED": {
+      "default": false,
+      "purpose": "set to 1 to skip persistence"
+    },
+    "OLLAMA_HOST": {
+      "default": "127.0.0.1",
+      "purpose": "Ollama backend address"
+    },
+    "OLLAMA_PORT": {
+      "default": 11434,
+      "purpose": "Ollama backend port"
+    },
+    "CLOUD_LLM_BASE_URL": {
+      "default": null,
+      "purpose": "if set, use OpenAiCompatibleBackend"
+    }
+  },
+  "lint": {
+    "tool": "node tools/lint.js",
+    "files_scanned": 39,
+    "policy": "console.log forbidden in non-CLI backend modules (allow-list: mockSignalK.js, telemetryIngest.js, llmNarrator.js, trinityDaemon.js). console.warn and console.error permitted elsewhere."
+  },
+  "gotchas": [
+    "The bridge still broadcasts before the log write resolves (a2aLog.append is fire-and-forget for latency). Documented in docs/PHASE5.md §6.",
+    "Use opts.port ?? DEFAULT_PORT, not opts.port || DEFAULT_PORT. Otherwise port: 0 is silently rewritten.",
+    "PowerShell does not support &&. Use ; or run commands in separate calls.",
+    "daemon.test.js teardown requires bridge.stop() to prevent event loop hang.",
+    "Unicode characters in record_note payloads break on Windows (charmap encoding). Use ASCII.",
+    "A2aLog is durable across instances; '_listLogFiles()' reads the entire directory.",
+    "Sub-second GPS interpolation belongs to vessel-agent (Python), not Trinity.",
+    "Lint forbids console.log in most backend modules. Allow-list: mockSignalK, telemetryIngest, llmNarrator, trinityDaemon.",
+    "Don't add a TypeScript build step. Plain JS + JSDoc only. Theia is the only TS allowed.",
+    "Every event name must come from shared/events.js. Never string literals."
+  ],
+  "phase_6_candidates": [
+    {
+      "title": "Theia extension",
+      "value": "highest",
+      "why": "Closes the L3 -> L4 loop. The bridge fans out but no UI listens. ~200 LOC TS.",
+      "blocks": "operator visibility"
+    },
+    {
+      "title": "Sync-then-broadcast bridge",
+      "value": "high",
+      "why": "Crash-recovery correctness. Trades ~5ms latency for durability. ~30 LOC.",
+      "blocks": "production-grade reliability"
+    },
+    {
+      "title": "Real vessel-agent Python WS bridge",
+      "value": "medium",
+      "why": "Replaces the mock with the real upstream. ~80 LOC Python.",
+      "blocks": "real-vessel testing"
+    },
+    {
+      "title": "DuckDB read-side adapter",
+      "value": "medium",
+      "why": "Retrospective queries against archived features. ~150 LOC.",
+      "blocks": "back-in-time analysis"
+    },
+    {
+      "title": "h3-js integration",
+      "value": "low",
+      "why": "Drop-in replacement for the quantized-grid approximation. ~50 LOC.",
+      "blocks": "production-grade spatial indexing"
+    }
+  ],
+  "cross_references": {
+    "root_agent_onboarding": "AGENTS.md",
+    "phase_5_handover": "docs/PHASE5.md",
+    "vessel_agent_integration": "docs/SYNERGY.md",
+    "design_rationale": "docs/ARCHITECTURE.md",
+    "run_time_ops": "docs/OPERATIONS.md",
+    "test_strategy": "docs/TESTING.md",
+    "wire_protocol_schema": "docs/a2a/SCHEMA.json",
+    "wire_protocol_examples": "docs/a2a/EXAMPLES.jsonl",
+    "wire_protocol_quickref": "docs/a2a/QUICKREF.md",
+    "this_status_manifest": "docs/STATUS.json",
+    "mesh_test_report": "docs/MESH_TEST_REPORT.md"
+  }
+}

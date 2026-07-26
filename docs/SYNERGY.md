@@ -463,9 +463,9 @@ side or the other.
 ### Sources of truth
 
 - **Wire protocol details** (handshake, error envelopes, replay semantics):
-  [`docs/PHASE5.md`](../PHASE5.md).
+  [`docs/PHASE5.md`](PHASE5.md).
 - **Run-time knobs** (env vars, port collision, shutdown order):
-  [`docs/OPERATIONS.md`](../OPERATIONS.md).
+  [`docs/OPERATIONS.md`](OPERATIONS.md).
 - **Implementation**: `backend/a2aBridge.js` (server), `backend/a2aClient.js`
   (client), `backend/a2aLog.js` (durable log).
 

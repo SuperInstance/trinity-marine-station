@@ -256,6 +256,7 @@ If you are a future agent and need to pick one: **#1 (Theia extension)** closes 
 - `docs/a2a/` (this round) — formal JSON Schema, examples, quickref for the A2A bridge
 - `docs/AGENTS.md` (this round) — longer-form agent-oriented onboarding
 - `docs/STATUS.json` (this round) — machine-readable project state
+- `docs/MESH_TEST_REPORT.md` — last round's mesh-test findings (audits, what was verified)
 
 ---
 
@@ -271,6 +272,35 @@ If you are a future agent and need to pick one: **#1 (Theia extension)** closes 
 7. **Commit** with a clear message; **push** to `main` if you have access, else
    push to a feature branch and open a PR.
 8. **Write a new memory entry** if you make a non-obvious decision.
+9. **Before any commit that changes module line counts**, run `npm run regen:status`
+   so `docs/STATUS.json` reflects reality.
+10. **Run `npm run verify`** before pushing. If it fails, do not commit.
+
+---
+
+## 11. Mesh verification (the "can I trust this codebase?" checklist)
+
+The repo ships five auditors that catch the most common drift bugs:
+
+| Tool | Catches | When to run |
+|---|---|---|
+| `tools/auditLinks.js` | Broken cross-doc links | Before any doc PR |
+| `tools/auditStatus.js` | Stale STATUS.json (commit, line counts) | Before pushing code changes |
+| `tools/auditRequires.js` | Missing/typo'd `require()` paths | Before any commit that touches backend/ or tests/ |
+| `tools/smokeDaemon.js` | Daemon won't boot, /status missing a2aBridge | After daemon changes |
+| `tools/lint.js` | Syntax errors, stray tabs, console.log in backend | Every commit |
+
+**Fastest sanity check:**
+
+```bash
+npm run verify       # audits + lint + test (~45s)
+```
+
+This is the canonical "is this codebase trustworthy?" command. Every CI run,
+every fresh agent session, every pre-push should run it. If it passes, the
+docs match the code, the tests cover the contracts, and the daemon boots.
+
+**Detailed report:** `docs/MESH_TEST_REPORT.md` (last round's findings).
 
 ---
 

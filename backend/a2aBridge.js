@@ -435,9 +435,13 @@ class A2aBridge {
     const ts = new Date().toISOString();
     const envelope = { type: "action", id, action, ts };
 
-    // Persist first (so a crash between persist and broadcast doesn't
-    // leave the log missing an action that a client might have received).
-    // If a2aLog is missing, we still broadcast but log a warning.
+    // Kick off persistence (fire-and-forget). Note: this is NOT awaited,
+    // so the broadcast below still runs before the JSONL write completes.
+    // This means a crash between append() and the actual fsync could
+    // leave a client holding an action that's not yet on disk for replay.
+    // See docs/PHASE5.md §5.1 "Durability gap" — fixing this requires
+    // awaiting the append() before broadcasting, which trades ~5ms latency
+    // for crash-recovery correctness. Phase 6 candidate.
     if (this.a2aLog) {
       this.a2aLog.append({
         kind: "action",

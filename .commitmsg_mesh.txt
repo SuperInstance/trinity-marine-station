@@ -1,0 +1,98 @@
+Mesh-test pass: audit tooling + STATUS refresh + documentation drift fixes
+
+## Why this commit
+
+Phase 5 (A2A bridge) was feature-complete and the code was tested, but a
+fresh agent landing in the repo had no way to verify the docs still matched
+the code. Round 17 ran a full mesh test and found real drift. This commit
+ships the auditors + the fixes they exposed.
+
+## What ships
+
+### Real bugs fixed
+- `docs/STATUS.json` claimed commit `21ef1a6` but HEAD was `808dcaa`;
+  line counts for all 18 backend modules were 30-50 lines off because
+  the file was last regenerated before Phase 5 closeout. Refreshed by
+  the new `tools/regenStatus.js`.
+- `docs/SYNERGY.md` line 466-468 had two broken links (`../PHASE5.md`
+  and `../OPERATIONS.md` would resolve to repo root, not `docs/`).
+  Fixed to point to the correct relative paths.
+- `backend/a2aBridge.js` had a misleading comment ("Persist first")
+  that contradicted both the actual behaviour (append is fire-and-forget)
+  and the documented durability gap in `docs/PHASE5.md` §5.1. Rewrote
+  the comment to be honest and point at the doc.
+- `package.json` `npm run status` / `npm run health` scripts pointed at
+  port 3001, but the daemon defaults to 8787 (env: `OPS_PORT`). Fixed
+  the scripts to match the actual default.
+
+### New audit tools (the real value-add)
+- `tools/auditLinks.js` — walks every `.md`/`.json`/`.jsonl` file,
+  extracts markdown links and backticked paths, verifies each resolves
+  to an existing file.
+- `tools/auditStatus.js` — verifies STATUS.json's commit hash, branch,
+  and module line counts match the live repo.
+- `tools/auditRequires.js` — resolves every `require()` in backend/ and
+  tests/ to confirm the target exists.
+- `tools/regenStatus.js` — regenerates STATUS.json (line counts + commit
+  hash) without disturbing the manual narrative fields.
+- `tools/smokeDaemon.js` — boots trinityDaemon, hits /health and /status,
+  asserts the `a2aBridge` section is present with `running=true` and
+  `stats`, then SIGTERM. Catches daemon boot regressions.
+
+### New npm scripts
+- `npm run audit:links`     — cross-doc link audit (~1s)
+- `npm run audit:status`    — STATUS.json integrity audit (~1s)
+- `npm run audit`           — both audits chained
+- `npm run verify`          — audits + lint + test (~45s)
+- `npm run regen:status`    — refresh STATUS.json
+
+### Documentation
+- `docs/MESH_TEST_REPORT.md` — new, the canonical "is this codebase
+  trustworthy?" report. Documents what was tested, what was found,
+  how to use the auditors, and the future-agent checklist.
+- `AGENTS.md` — added §11 "Mesh verification" pointing at the audit
+  tools and the new mesh report. Updated §10 "Your obligations" to
+  mandate `npm run verify` before any push.
+- `docs/STATUS.json` — refreshed (commit, line counts, module list
+  includes the 5 new audit tools).
+
+## Test & lint verification
+
+- `npm test`          — 14 suites, ALL TESTS PASSED, ~40s
+- `npm run lint`      — 39 files clean
+- `npm run audit:links` — 43 cross-references, 0 broken
+- `npm run audit:status` — 33 OK / 0 errors
+- `node tools/auditRequires.js` — 120 requires, 0 errors
+- `node tools/smokeDaemon.js` — /health 200, a2aBridge.running=true,
+  stats present, graceful shutdown
+- 12/12 individual test suites pass in isolation (no port collisions,
+  no shared state leaks)
+
+## Audience
+
+This commit is for two readers:
+1. **Future agent builders** — the new `npm run verify` is the canonical
+   "can I trust this codebase?" command. Run it before any push. If it
+   fails, the first error tells you what drifted.
+2. **Successor agent sessions** — `docs/MESH_TEST_REPORT.md` documents
+   the verification suite and what it caught in this round. Read it to
+   learn what *kind* of drift to watch for.
+
+## What does NOT ship
+
+- No production code behaviour changes (a2aBridge comment is honesty,
+  not a logic fix).
+- The durability gap from `docs/PHASE5.md` §5.1 remains — the comment
+  now honestly documents it; the fix is a Phase 6 candidate
+  (~30 LOC, await append before broadcast).
+- No new dependencies. All audit tools are pure Node stdlib.
+- No Theia extension work; still in `frontend/` placeholder.
+
+## Commit-message convention reminder (for future agents)
+
+- First line: imperative, < 72 chars, no period
+- Blank line, then body wrapped at 72 cols
+- Use Markdown headers (##) in the body for skimmability
+- "What does NOT ship" near the end prevents scope confusion
+- Audience section near the end helps reviewers
+- This commit body is the template — copy the structure
