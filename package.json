@@ -15,9 +15,12 @@
     "lint":         "node tools/lint.js",
     "audit:links":      "node tools/auditLinks.js",
     "audit:status":     "node tools/auditStatus.js",
-    "audit":            "node tools/auditLinks.js && node tools/auditStatus.js",
-    "verify":           "node tools/auditLinks.js && node tools/auditStatus.js && npm run lint && npm test",
+    "audit:schema":     "node tools/auditSchema.js",
+    "audit":            "node tools/auditLinks.js && node tools/auditStatus.js && node tools/auditSchema.js",
+    "verify":           "node tools/auditLinks.js && node tools/auditStatus.js && node tools/auditSchema.js && npm run lint && npm test",
     "regen:status":     "node tools/regenStatus.js",
+    "regen:schema":     "node tools/regenSchema.js",
+    "regen:schema:check": "node tools/regenSchema.js --check",
     "test:pipeline":     "node tests/pipeline.test.js",
     "test:lifecycle":    "node tests/trinityLifecycle.test.js",
     "test:ollama":       "node tests/ollama.smoke.test.js",
@@ -32,6 +35,7 @@
     "test:a2alog":       "node tests/a2aLog.test.js",
     "test:a2abridge":    "node tests/a2aBridge.test.js",
     "test:a2aclient":    "node tests/a2aClient.test.js",
+    "test:a2aquery":    "node tests/a2aQuery.test.js",
     "test":              "node tests/run.js"
   },
   "engines": {

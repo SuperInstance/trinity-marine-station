@@ -3,7 +3,7 @@
   "$id": "https://github.com/SuperInstance/trinity-marine-station/blob/main/docs/STATUS.json",
   "title": "Trinity Marine Station - Project Status Manifest",
   "description": "Agentic-first marine navigation station. Real-time ingestion of vessel telemetry, JEPA-style anomaly detection, local LLM narration, and a WebSocket A2A bridge to a future Eclipse Theia workspace.",
-  "generated_at": "2026-07-26T19:25:54.442Z",
+  "generated_at": "2026-07-26T19:58:20.343Z",
   "_comment": "Update 'generated_at' whenever this file is edited. Update 'commit' to the latest shipped commit hash (HEAD on main, when working tree is clean).",
   "name": "trinity-marine-station",
   "display_name": "Trinity Marine Station",
@@ -15,7 +15,7 @@
     "role": "L0/L1 data capture (NMEA, acoustic, catch); upstream of Trinity's L2 cognitive layer"
   },
   "license": "private (no license declared yet)",
-  "commit": "db6285d6586d85a322005efdb9556bc9139d0e48",
+  "commit": "db076f37686fe0c6da0179478d25be4fd123d522",
   "branch": "main",
   "node_version_required": ">=18.0.0",
   "language": "JavaScript (Node.js, plain JS with JSDoc; no build step)",
@@ -161,7 +161,7 @@
       "purpose": "WebSocket server on port 3002. Validates A2AAction payloads, assigns monotonic ids, persists to A2aLog, broadcasts to all clients with replay/ack/ping/pong."
     },
     "backend/a2aClient.js": {
-      "lines": 492,
+      "lines": 570,
       "phase": 5,
       "exports": [
         "A2aClient"
@@ -520,7 +520,7 @@
       "purpose": "Module resolution auditor. Resolves every require() in backend/ and tests/ to confirm the target file exists."
     },
     "tools/regenStatus.js": {
-      "lines": 103,
+      "lines": 123,
       "phase": "5+",
       "exports": [
         "main"
@@ -546,6 +546,37 @@
         "path"
       ],
       "purpose": "Daemon end-to-end smoke test. Boots trinityDaemon, hits /health + /status, asserts a2aBridge section, graceful shutdown."
+    },
+    "tools/regenSchema.js": {
+      "lines": 314,
+      "phase": "6",
+      "exports": [
+        "loadAllowedActions",
+        "buildSchema"
+      ],
+      "deps_internal": [],
+      "deps_external": [
+        "fs",
+        "path"
+      ],
+      "purpose": "Regenerates docs/a2a/SCHEMA.json from backend/schemas.js:A2A_ALLOWED_ACTIONS. Single source of truth: code is authoritative."
+    },
+    "tools/auditSchema.js": {
+      "lines": 160,
+      "phase": "6",
+      "exports": [
+        "checkSchemaEnum",
+        "checkExamples",
+        "checkMarkdownFiles"
+      ],
+      "deps_internal": [
+        "./regenSchema"
+      ],
+      "deps_external": [
+        "fs",
+        "path"
+      ],
+      "purpose": "Audits A2A docs against runtime allow-list: SCHEMA.json enum matches, EXAMPLES.jsonl uses no unknown actions, *.md prose contains no drift."
     }
   },
   "tests": {
@@ -580,7 +611,7 @@
         "file": "tests/a2aClient.test.js",
         "assertions": 16,
         "covers": "client reconnect + replay",
-        "lines": 524
+        "lines": 778
       },
       {
         "file": "tests/a2aLog.test.js",

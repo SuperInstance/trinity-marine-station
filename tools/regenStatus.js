@@ -87,6 +87,26 @@ if (!modules["tools/smokeDaemon.js"]) {
     purpose: "Daemon end-to-end smoke test. Boots trinityDaemon, hits /health + /status, asserts a2aBridge section, graceful shutdown."
   };
 }
+if (!modules["tools/regenSchema.js"]) {
+  modules["tools/regenSchema.js"] = {
+    lines: lineCount(path.join(ROOT, "tools/regenSchema.js")),
+    phase: "6",
+    exports: ["loadAllowedActions", "buildSchema"],
+    deps_internal: [],
+    deps_external: ["fs", "path"],
+    purpose: "Regenerates docs/a2a/SCHEMA.json from backend/schemas.js:A2A_ALLOWED_ACTIONS. Single source of truth: code is authoritative."
+  };
+}
+if (!modules["tools/auditSchema.js"]) {
+  modules["tools/auditSchema.js"] = {
+    lines: lineCount(path.join(ROOT, "tools/auditSchema.js")),
+    phase: "6",
+    exports: ["checkSchemaEnum", "checkExamples", "checkMarkdownFiles"],
+    deps_internal: ["./regenSchema"],
+    deps_external: ["fs", "path"],
+    purpose: "Audits A2A docs against runtime allow-list: SCHEMA.json enum matches, EXAMPLES.jsonl uses no unknown actions, *.md prose contains no drift."
+  };
+}
 
 // Update test suite total
 const tests = status.tests || {};

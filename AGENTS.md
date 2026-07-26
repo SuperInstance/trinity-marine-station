@@ -330,13 +330,14 @@ If you are a future agent and need to pick one: **#1 (Theia extension)** closes 
 
 ## 11. Mesh verification (the "can I trust this codebase?" checklist)
 
-The repo ships five auditors that catch the most common drift bugs:
+The repo ships six auditors that catch the most common drift bugs:
 
 | Tool | Catches | When to run |
 |---|---|---|
 | `tools/auditLinks.js` | Broken cross-doc links | Before any doc PR |
 | `tools/auditStatus.js` | Stale STATUS.json (commit, line counts) | Before pushing code changes |
 | `tools/auditRequires.js` | Missing/typo'd `require()` paths | Before any commit that touches backend/ or tests/ |
+| `tools/auditSchema.js` | SCHEMA.json / EXAMPLES.jsonl / *.md use action names not in `A2A_ALLOWED_ACTIONS` | Before any commit that touches `docs/a2a/` or `backend/schemas.js` |
 | `tools/smokeDaemon.js` | Daemon won't boot, /status missing a2aBridge | After daemon changes |
 | `tools/lint.js` | Syntax errors, stray tabs, console.log in backend | Every commit |
 
