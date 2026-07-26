@@ -3,7 +3,7 @@
   "$id": "https://github.com/SuperInstance/trinity-marine-station/blob/main/docs/STATUS.json",
   "title": "Trinity Marine Station - Project Status Manifest",
   "description": "Agentic-first marine navigation station. Real-time ingestion of vessel telemetry, JEPA-style anomaly detection, local LLM narration, and a WebSocket A2A bridge to a future Eclipse Theia workspace.",
-  "generated_at": "2026-07-26T19:03:47.757Z",
+  "generated_at": "2026-07-26T19:25:54.442Z",
   "_comment": "Update 'generated_at' whenever this file is edited. Update 'commit' to the latest shipped commit hash (HEAD on main, when working tree is clean).",
   "name": "trinity-marine-station",
   "display_name": "Trinity Marine Station",
@@ -15,7 +15,7 @@
     "role": "L0/L1 data capture (NMEA, acoustic, catch); upstream of Trinity's L2 cognitive layer"
   },
   "license": "private (no license declared yet)",
-  "commit": "486c1e9c29d9e3b7350d6ca2d946eaa66d3bdf71",
+  "commit": "db6285d6586d85a322005efdb9556bc9139d0e48",
   "branch": "main",
   "node_version_required": ">=18.0.0",
   "language": "JavaScript (Node.js, plain JS with JSDoc; no build step)",
@@ -108,12 +108,12 @@
       "title": "unassigned",
       "status": "in_progress",
       "shipped": [
-        "Sync-then-broadcast bridge (durability fix) — shipped in commit 486c1e9"
+        "Sync-then-broadcast bridge (durability fix) — shipped in commit 486c1e9",
+        "Pure-JS read-side query layer (backend/a2aQuery.js) — DuckDB substitute, no new deps"
       ],
       "candidates": [
         "Theia extension (TypeScript frontend that consumes the A2A bridge)",
         "Real vessel-agent Python WS bridge (publishes trinity delta at :3000)",
-        "DuckDB read-side adapter for retrospective queries",
         "h3-js integration for production-grade H3"
       ]
     },
@@ -202,6 +202,24 @@
       "test_file": "tests/a2aLog.test.js",
       "tests": 18,
       "purpose": "Append-only JSONL audit log. Batched writes, rotation, replay, persistence, ack checkpointing."
+    },
+    "backend/a2aQuery.js": {
+      "lines": 363,
+      "phase": "6",
+      "exports": [
+        "A2aQuery",
+        "recordMatches",
+        "isA2aLogFilename"
+      ],
+      "deps_internal": [],
+      "deps_external": [
+        "fs/promises",
+        "fs",
+        "path"
+      ],
+      "test_file": "tests/a2aQuery.test.js",
+      "tests": 38,
+      "purpose": "Read-side query layer over A2aLog JSONL files. Pure-JS streaming filter, countBy/topBy, time-bucketing, summary. No native deps."
     },
     "backend/vesselAgentAdapter.js": {
       "lines": 271,
@@ -571,6 +589,12 @@
         "lines": 390
       },
       {
+        "file": "tests/a2aQuery.test.js",
+        "assertions": 38,
+        "covers": "read-side query layer (filters, countBy, topBy, bucketBy, summary)",
+        "lines": 546
+      },
+      {
         "file": "tests/circuitBreaker.test.js",
         "assertions": 20,
         "covers": "breaker state machine",
@@ -715,7 +739,7 @@
     "policy": "console.log forbidden in non-CLI backend modules (allow-list: mockSignalK.js, telemetryIngest.js, llmNarrator.js, trinityDaemon.js). console.warn and console.error permitted elsewhere."
   },
   "gotchas": [
-    "The bridge still broadcasts before the log write resolves (a2aLog.append is fire-and-forget for latency). Documented in docs/PHASE5.md §6.",
+    "The bridge persists to the log BEFORE broadcasting (sync-then-broadcast, Phase 6). _broadcastAction is async and awaits a2aLog.append(); if the write fails, the action is dropped (no broadcast) and the id is reclaimed. See AGENTS.md gotcha #1.",
     "Use opts.port ?? DEFAULT_PORT, not opts.port || DEFAULT_PORT. Otherwise port: 0 is silently rewritten.",
     "PowerShell does not support &&. Use ; or run commands in separate calls.",
     "daemon.test.js teardown requires bridge.stop() to prevent event loop hang.",
@@ -756,10 +780,15 @@
       "blocks": "real-vessel testing"
     },
     {
-      "title": "DuckDB read-side adapter",
+      "title": "Pure-JS read-side query layer (DuckDB substitute)",
       "value": "medium",
-      "why": "Retrospective queries against archived features. ~150 LOC.",
-      "blocks": "back-in-time analysis"
+      "why": "Retrospective queries against archived actions. Avoids DuckDB native dep. ~280 LOC.",
+      "blocks": "back-in-time analysis",
+      "status": "shipped",
+      "shipped_in_commit": "(pending this commit)",
+      "module": "backend/a2aQuery.js",
+      "test_file": "tests/a2aQuery.test.js",
+      "tests": 38
     },
     {
       "title": "h3-js integration",

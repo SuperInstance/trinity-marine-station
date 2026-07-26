@@ -67,6 +67,7 @@
 | **AI**   | `backend/a2aLog.js` | Append-only JSONL audit log for every emitted A2A mutation. Batched writes, size-based rotation, replay across files. |
 | **AI**   | `backend/a2aBridge.js` | WebSocket server that fans out `A2AAction` events to subscribed frontends with replay-on-reconnect and ack-based idempotency. Port 3002. See [`docs/PHASE5.md`](./docs/PHASE5.md). |
 | **AI**   | `backend/a2aClient.js` | Typed-style WebSocket client for the bridge — hello handshake, monotonic action IDs, auto-reconnect with exponential backoff, manual replay. Used by the future Theia frontend. |
+| **AI**   | `backend/a2aQuery.js` | Read-side query layer over the A2A JSONL audit log. Pure-JS streaming filter, `countBy`/`topBy`, time-bucketing, `summary`. No native deps (DuckDB substitute). |
 | **Data** | `backend/h3.js` | Lightweight H3-style spatial indexer (drop-in compatible with `h3-js`). |
 | **Data** | `backend/vesselAgentAdapter.js` | Anti-corruption layer: normalizes Signal K + vessel-agent `core_anchor` JSON into a canonical `TrinityFrame`. |
 | **Test** | `tests/pipeline.test.js` | End-to-end Phase 1 verification (streamer + ingest + ring buffer). |
@@ -83,6 +84,7 @@
 | **Test** | `tests/a2aLog.test.js` | JSONL audit log: append, batching, rotation, replay, corruption tolerance, concurrency. |
 | **Test** | `tests/a2aBridge.test.js` | Bridge: hello handshake, replay-on-connect, ack persistence, ping/pong, malformed-payload dropping, multi-client fanout, graceful stop. |
 | **Test** | `tests/a2aClient.test.js` | Client: hello round-trip, monotonic action IDs, manual + auto replay, malformed JSON, error envelope, destroy cancels reconnect, reconnect give-up. |
+| **Test** | `tests/a2aQuery.test.js` | a2aQuery: filter helpers, multi-file mtime order, countBy/topBy, bucketBy, summary, malformed-line tolerance. |
 | **Test** | `tests/run.js` | Unified runner that discovers every `*.test.js`, aggregates exit codes, never lets a stray stderr line fail `npm test`. |
 
 ---

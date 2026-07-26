@@ -71,8 +71,9 @@ Approximate total tests: ~3,950 lines across 18 files.
 | `backend/trinityDaemon.js` | 488 | Production daemon: ingest → JEPA → narrator → a2aLog → a2aBridge. Binds env vars. |
 | `backend/llmBackends.js`   | 558 | `HttpLlmBackend` (Ollama) + `OpenAiCompatibleBackend` + `MockLlmBackend` + SSE parser. |
 | `backend/llmNarrator.js`   | 523 | Conscious narrator: stream splitter, prose vs `<a2a>` blocks, throttled/emergency modes. |
-| `backend/a2aBridge.js`     | 446 | WebSocket server (port 3002). Hello, replay, ack, ping/pong, graceful shutdown. |
+| `backend/a2aBridge.js`     | 446 | WebSocket server (port 3002). Hello, replay, ack, ping/pong, graceful shutdown. Sync-then-broadcast durability (Phase 6). |
 | `backend/a2aClient.js`     | 457 | Typed WS client. Auto-reconnect, manual replay, destroy. |
+| `backend/a2aQuery.js`      | 281 | Read-side query layer over the JSONL action log. Pure JS, no native deps. Filters, countBy/topBy, time-bucket, summary. |
 | `backend/schemas.js`       | 429 | Validators for every wire shape. Add new shapes here. |
 | `backend/telemetryIngest.js` | 323 | WebSocket consumer. Hello handshake, exponential backoff, frame parsing. |
 | `backend/a2aLog.js`        | 307 | Append-only JSONL audit log. Batched writes, rotation, replay. |
@@ -81,9 +82,10 @@ Approximate total tests: ~3,950 lines across 18 files.
 | `backend/ollama.smoke.test.js` | 263 | Live Ollama integration (skips if not running). |
 | `backend/vesselAgentAdapter.js` | 240 | Normalizes Signal K + vessel-agent deltas into one `TrinityFrame`. |
 | `backend/jepaWorldModel.js` | 203 | Linear predictor. Energy ∈ [0,1]. >0.5 = anomaly. |
-| `backend/a2aBridge.test.js` | 429 | 15 cases. |
+| `backend/a2aBridge.test.js` | 429 | 18 cases. |
 | `backend/a2aClient.test.js` | 465 | 16 cases. |
 | `backend/a2aLog.test.js`    | 361 | 18 cases. |
+| `tests/a2aQuery.test.js`    | 484 | 38 cases (helpers + integration). |
 | `backend/trinityLifecycle.test.js` | 274 | 9 cases + live WS smoke. |
 | `backend/pipeline.test.js`  | 264 | 11 cases (streamer + ingest + ring buffer). |
 | `backend/daemon.test.js`    | 228 | 6 cases. |
@@ -190,6 +192,49 @@ TrinityCore on('energy')
 A2aBridge on('a2a') → A2aLog append → broadcast to all clients
 ```
 
+### 5.3 Read-side queries (a2aQuery)
+
+For retrospective analysis ("what happened yesterday?", "top alert reasons",
+"actions-per-hour"), use `backend/a2aQuery.js`. It streams the JSONL files
+in `./logs/a2a/` (oldest-first by mtime) and applies filters / aggregations
+in JS. No SQL, no native deps, no full-file load.
+
+```
+const { A2aQuery } = require("./backend/a2aQuery");
+const q = new A2aQuery({ dir: "./logs/a2a" });
+
+// Filter: every hazard-mode morph in the last hour
+const hazards = await q.query({
+  action: "morph_to_hazard_mode",
+  since: new Date(Date.now() - 3_600_000).toISOString(),
+});
+
+// Top-N reasons for raise_alert
+const topReasons = await q.topBy({
+  field: "reason", limit: 5,
+  filters: { action: "raise_alert" },
+});
+
+// Per-minute bucket for the last day
+const buckets = await q.bucketBy({
+  intervalMs: 60_000,
+  filters: { since: "2026-07-25T00:00:00Z" },
+});
+// => [ { ts: "2026-07-25T12:00:00Z", count: 3 }, ... ]
+
+// Roll-up
+const s = await q.summary();
+// => { totalRecords, byKind, byAction, timeRange }
+```
+
+Filters: `kind`, `action`, `since`, `until`, `minPriority`, `maxPriority`,
+`reasonContains`. Combinations are AND-ed. Missing fields on a record cause
+that record to fail the corresponding filter.
+
+Why streaming and not in-memory? Voyage-day logs are small (KB to low MB),
+but multi-week retrospectives can grow. The iterator yields records one at a
+time, so memory stays bounded by line length, not file size.
+
 ---
 
 ## 6. The seams (where to add things)
@@ -205,6 +250,7 @@ A2aBridge on('a2a') → A2aLog append → broadcast to all clients
 | A new health probe | `backend/healthCheck.js` (implement `probe()`) |
 | A new env var | `backend/trinityDaemon.js` (read), `docs/OPERATIONS.md` (document) |
 | A new test suite | Drop `*.test.js` in `tests/` — auto-discovered |
+| A new query filter / aggregation | `backend/a2aQuery.js` (`recordMatches`, `query`, `countBy`, `topBy`, `bucketBy`, `summary`) |
 
 ---
 
@@ -236,14 +282,14 @@ A2aBridge on('a2a') → A2aLog append → broadcast to all clients
 
 **Phase 6 progress so far:**
 
-- [x] **Sync-then-broadcast bridge fix** (shipped 2026-07-26, commit forthcoming). `_broadcastAction` awaits `log.append()` before sending to clients; `actionsDropped` counter added; 3 new tests pin the invariant. See `docs/PHASE5.md §5.1` for the durability analysis and gotcha #1 above for the implementation summary.
+- [x] **Sync-then-broadcast bridge fix** (shipped 2026-07-26, commit `486c1e9`). `_broadcastAction` awaits `log.append()` before sending to clients; `actionsDropped` counter added; 3 new tests pin the invariant. See `docs/PHASE5.md §5.1` for the durability analysis and gotcha #1 above for the implementation summary.
+- [x] **Read-side query layer** (shipped 2026-07-26, commit forthcoming). `backend/a2aQuery.js` provides a DuckDB-substitute in pure JS — streaming filter, countBy/topBy, time-bucketing, summary. No native deps. Use it for retrospective analysis: "how many `morph_to_hazard_mode` fired per hour over the last 24h?", "top 5 reasons for `raise_alert`", etc. 38 new tests cover it.
 
 **Remaining candidates, ranked by value-per-line:**
 
 1. **Theia extension** (TypeScript, lives in `frontend/`). The `A2aClient` is ready to drop in. Need: a panel that reads `morph_to_hazard_mode` and visually switches the workspace; basic JSON-RPC plumbing. ~200 LOC.
 2. **Real vessel-agent → WS bridge** (Python, ships in `vessel-agent`). ~80 LOC. Just publishes the trinity delta format at `ws://localhost:3000`.
-3. **DuckDB read-side adapter.** For retrospective queries against archived features. ~150 LOC.
-4. **`h3-js` integration** for production-grade H3 (current is a quantized-grid approximation). Drop-in replacement of `backend/h3.js`.
+3. **`h3-js` integration** for production-grade H3 (current is a quantized-grid approximation). Drop-in replacement of `backend/h3.js`.
 
 If you are a future agent and need to pick one: **#1 (Theia extension)** closes the cognitive loop the most of these. The repo is currently "talks to itself" — the bridge fans out, but no UI listens. Theia is where the operator (captain) finally sees the system.
 

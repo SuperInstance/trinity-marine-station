@@ -207,6 +207,40 @@ The bridge is bound to `127.0.0.1` by default for safety. To expose it on
 your LAN, set `BRIDGE_HOST=0.0.0.0` — but only do that if you understand
 that any client with TCP reach can subscribe to every emitted mutation.
 
+### 5c. Retrospective queries (a2aQuery)
+
+For post-voyage analysis ("how often did we hit hazard mode last week?",
+"top reasons for raising alerts"), use the `A2aQuery` read-side layer.
+It streams the JSONL files in `./logs/a2a/` (same files the bridge
+writes to) and answers questions without needing the daemon to be
+running.
+
+```bash
+node -e "
+  const { A2aQuery } = require('./backend/a2aQuery');
+  const q = new A2aQuery({ dir: './logs/a2a' });
+  (async () => {
+    const top = await q.topBy({ field: 'action', limit: 5 });
+    console.log(JSON.stringify(top, null, 2));
+    const buckets = await q.bucketBy({ intervalMs: 3_600_000 });
+    console.log('per-hour:', JSON.stringify(buckets));
+  })();
+"
+```
+
+`A2aQuery` is pure JS — no DuckDB, no native deps. It does an mtime-ordered
+stream of the directory, parses each JSONL line, and applies filters in JS.
+Suitable for voyage-week logs (KB to low MB). For multi-year archives,
+consider exporting to DuckDB separately.
+
+Available methods: `query(filters)`, `countBy({field, filters})`,
+`topBy({field, limit, filters})`, `bucketBy({intervalMs, filters})`,
+`summary(filters)`. Filters: `kind`, `action`, `since`, `until`,
+`minPriority`, `maxPriority`, `reasonContains`.
+
+See `tests/a2aQuery.test.js` for usage examples and `AGENTS.md` §5.3 for
+a longer write-up.
+
 ---
 
 ## 6. Graceful shutdown
