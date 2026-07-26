@@ -65,12 +65,17 @@ const {
   A2aLog,
 } = require("./a2aLog");
 const {
+  A2aBridge,
+} = require("./a2aBridge");
+const {
   STREAMER_HOST,
   STREAMER_PORT,
 } = require("./marineConstants");
 
-const DEFAULT_OPS_PORT = 3001;
-const DEFAULT_OPS_HOST = "127.0.0.1";
+const DEFAULT_OPS_PORT      = 3001;
+const DEFAULT_OPS_HOST      = "127.0.0.1";
+const DEFAULT_BRIDGE_PORT   = 3002;
+const DEFAULT_BRIDGE_HOST   = "127.0.0.1";
 
 // ===========================================================================
 // Logger — a single tagged line format for everything the daemon emits.
@@ -135,6 +140,11 @@ function loadConfig(env = process.env) {
     a2aLogDir:       env.A2A_LOG_DIR ?? "./logs/a2a",
     a2aLogMaxBytes:  env.A2A_LOG_MAX_BYTES ? Number(env.A2A_LOG_MAX_BYTES) : undefined,
     a2aLogDisabled:  env.A2A_LOG_DISABLED === "1" || env.A2A_LOG_DISABLED === "true",
+
+    // A2A WebSocket bridge (Phase 5 — Theia frontend transport)
+    bridgeHost:      env.BRIDGE_HOST ?? DEFAULT_BRIDGE_HOST,
+    bridgePort:      env.BRIDGE_PORT ? Number(env.BRIDGE_PORT) : DEFAULT_BRIDGE_PORT,
+    bridgeDisabled:  env.BRIDGE_DISABLED === "1" || env.BRIDGE_DISABLED === "true",
   };
 
   // Source description (used in startup banner)
@@ -300,6 +310,24 @@ async function buildTrinity(cfg) {
     ...(cfg.a2aLogMaxBytes ? { maxBytes: cfg.a2aLogMaxBytes } : {}),
   });
 
+  // A2A WebSocket bridge — Phase 5 fan-out transport for the Theia
+  // frontend (and any other listener). Reuses the same a2aLog so
+  // acknowledgements and replays share one durable record. Disable with
+  // BRIDGE_DISABLED=1 for tests that don't need it.
+  let a2aBridge = null;
+  if (!cfg.bridgeDisabled) {
+    a2aBridge = new A2aBridge({
+      core,
+      a2aLog,
+      host: cfg.bridgeHost,
+      port: cfg.bridgePort,
+      verbose: false,
+    });
+    a2aBridge.start().catch((err) => {
+      log(TAG_ERR, "a2a bridge failed to start", { error: err.message });
+    });
+  }
+
   // ---------- event wiring ----------
   const frameBuffer = { last: null };
   ingest.on("open",      () => log(TAG_LIFECYCLE, "ingest open", { url: cfg.signalKUrl }));
@@ -363,7 +391,7 @@ async function buildTrinity(cfg) {
   });
 
   return {
-    backend, ingest, jepa, narrator, core, retriever, store, a2aLog,
+    backend, ingest, jepa, narrator, core, retriever, store, a2aLog, a2aBridge,
     ringBuffer: ingest.buffer,
     frameBuffer,
     snapshot: () => ({
@@ -381,6 +409,13 @@ async function buildTrinity(cfg) {
       core:     core.stats,
       retriever: { size: retriever.size },
       a2aLog:   a2aLog ? a2aLog.stats() : { disabled: true },
+      a2aBridge: a2aBridge
+        ? {
+            running: a2aBridge.running,
+            clientCount: a2aBridge.clientCount,
+            stats: a2aBridge.stats(),
+          }
+        : { disabled: true },
       lastFrame: frameBuffer.last,
     }),
   };
@@ -399,6 +434,8 @@ async function main() {
     signalKUrl: cfg.signalKUrl,
     opsHost: cfg.opsHost,
     opsPort: cfg.opsPort,
+    bridgeHost: cfg.bridgeHost,
+    bridgePort: cfg.bridgePort,
     ringCapacity: cfg.ringCapacity,
     normalIntervalMs: cfg.normalIntervalMs,
   });
@@ -441,6 +478,10 @@ async function main() {
       t.core.stop();
       t.narrator.destroy();
       t.ingest.disconnect();
+      // Stop the bridge BEFORE we tear the audit log down — otherwise the
+      // bridge's "ack persisted" writes race with destroy() and we lose
+      // the final acknowledgements.
+      if (t.a2aBridge) await t.a2aBridge.stop();
       // Flush the A2A audit log BEFORE we tear anything else down so any
       // in-flight mutation that's still pending a write gets durably saved.
       if (t.a2aLog) await t.a2aLog.destroy();
@@ -471,6 +512,10 @@ module.exports = {
   loadConfig,
   buildTrinity,
   log,
+  DEFAULT_OPS_PORT,
+  DEFAULT_OPS_HOST,
+  DEFAULT_BRIDGE_PORT,
+  DEFAULT_BRIDGE_HOST,
   TAG_LIFECYCLE,
   TAG_TICK,
   TAG_ENERGY,

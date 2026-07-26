@@ -18,7 +18,9 @@ npm install
 #    - starts an embedded mock Signal K streamer on port 3000,
 #    - connects the telemetry ingest,
 #    - feeds the JEPA world model + LLM narrator + vector retriever,
-#    - and exposes /health and /status on http://127.0.0.1:3001.
+#    - exposes /health and /status on http://127.0.0.1:3001,
+#    - and serves the A2A WebSocket bridge on ws://127.0.0.1:3002 for
+#      Phase 5 frontend consumers (Theia extension, dashboards).
 npm start
 
 # 3. In a second terminal, watch what is happening:
@@ -123,6 +125,9 @@ and by `npm run test:daemon` so the test suite works in CI without a GPU.
 | `A2A_LOG_DIR`             | `./logs/a2a`           | Directory for the A2A audit log (JSONL). Auto-created.   |
 | `A2A_LOG_MAX_BYTES`       | `10485760` (10 MB)     | Rotate the active log file when it exceeds this size.    |
 | `A2A_LOG_DISABLED`        | `false`                | Set `1` to disable the audit log (ephemeral tests).      |
+| `BRIDGE_HOST`             | `127.0.0.1`            | Bind address for the A2A WebSocket bridge (Phase 5).     |
+| `BRIDGE_PORT`             | `3002`                 | Port for the A2A WebSocket bridge.                       |
+| `BRIDGE_DISABLED`         | `false`                | Set `1` to disable the bridge (e.g. when running only the audit log). |
 
 ---
 
@@ -148,6 +153,60 @@ Sample `/status` shape (real fields may grow):
 The `lastFrame` is the most recent 6-D feature vector with its JEPA energy
 attached — useful for "what just happened" triage.
 
+### 5b. The A2A WebSocket bridge
+
+In addition to the HTTP `ops` server, the daemon also serves a WebSocket
+endpoint on `ws://${BRIDGE_HOST}:${BRIDGE_PORT}` (default
+`ws://127.0.0.1:3002`). This is **Phase 5** — the transport that lets an
+external consumer (the Eclipse Theia extension, a dashboard, or a headless
+test harness) receive the same `A2AAction` stream that the cognitive engine
+emits, durably, and replay-safe.
+
+The protocol is documented in detail in [`docs/PHASE5.md`](./PHASE5.md) and
+implemented in `backend/a2aBridge.js` (server) and `backend/a2aClient.js`
+(client). At a glance:
+
+| Frame type    | Direction       | Purpose                                                 |
+|---------------|-----------------|---------------------------------------------------------|
+| `hello`       | bridge → client | Handshake on connect. Carries `last_action_id`.         |
+| `action`      | bridge → client | A validated workspace mutation with a monotonic `id`.   |
+| `replay_end`  | bridge → client | Marks the end of a gap-fill replay.                     |
+| `ack_ok`      | bridge → client | Ack was persisted.                                      |
+| `pong`        | bridge → client | Heartbeat response.                                     |
+| `error`       | bridge → client | Protocol / schema violation (with `code` + `errors[]`).  |
+| `ack`         | client → bridge | "I've durably applied action id N."                      |
+| `replay`      | client → bridge | "Replay every action with id > N."                       |
+| `ping`        | client → bridge | Liveness probe.                                         |
+
+**Quick smoke test** — once the daemon is running:
+
+```bash
+# In Node:
+node -e "
+  const WebSocket = require('ws');
+  const ws = new WebSocket('ws://127.0.0.1:3002');
+  ws.on('message', (b) => console.log(b.toString()));
+"
+```
+
+You should see a `hello` envelope within a few hundred milliseconds. Any
+`A2AAction` the cognitive engine emits will arrive as `action` envelopes.
+The bridge also appears in `/status` under `a2aBridge`:
+
+```json
+{
+  "a2aBridge": {
+    "running": true,
+    "clientCount": 1,
+    "stats": { "actionsBroadcast": 42, "acksReceived": 41, "replaysDrained": 0, ... }
+  }
+}
+```
+
+The bridge is bound to `127.0.0.1` by default for safety. To expose it on
+your LAN, set `BRIDGE_HOST=0.0.0.0` — but only do that if you understand
+that any client with TCP reach can subscribe to every emitted mutation.
+
 ---
 
 ## 6. Graceful shutdown
@@ -158,9 +217,10 @@ order:
 1. `core.stop()` — halts the 500 ms loop and aborts any in-flight LLM gen.
 2. `narrator.destroy()` — marks the narrator as destroyed.
 3. `ingest.disconnect()` — sets the user-closed flag and clears reconnect timers.
-4. `a2aLog.destroy()` — flushes any pending A2A audit writes to disk before exit.
-5. `stopOpsServer(opsServer)` — closes the HTTP listener.
-6. `stopStreamer()` (only if embedded) — SIGTERM with a 2 s SIGKILL escalation.
+4. `a2aBridge.stop()` — closes all subscribed clients and unbinds port 3002.
+5. `a2aLog.destroy()` — flushes any pending A2A audit writes to disk before exit.
+6. `stopOpsServer(opsServer)` — closes the HTTP listener.
+7. `stopStreamer()` (only if embedded) — SIGTERM with a 2 s SIGKILL escalation.
 
 If anything in that chain throws, the daemon exits with code 1 and the error
 is logged at `[ERR]`. Otherwise it logs `[LIFE] shutdown complete` and exits 0.
@@ -183,6 +243,15 @@ On macOS / Linux:
 ```bash
 lsof -ti:3000 | xargs -r kill -9
 ```
+
+### "EADDRINUSE 127.0.0.1:3002" (Phase 5 bridge)
+
+Two daemons can't share the A2A bridge port. Either:
+
+- Pick a different port on the second one: `BRIDGE_PORT=3003 npm start`.
+- Or disable the bridge on the second one: `BRIDGE_DISABLED=1 npm start`.
+
+The same `Get-NetTCPConnection` / `lsof` recipes above work for port 3002.
 
 ### "Ollama ECONNREFUSED 127.0.0.1:11434"
 

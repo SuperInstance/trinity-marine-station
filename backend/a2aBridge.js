@@ -78,7 +78,10 @@ const HEARTBEAT_INTERVAL_MS = 30 * 1000;
  */
 class A2aBridge {
   constructor(opts = {}) {
-    this.port = opts.port || DEFAULT_PORT;
+    // Use ?? so a caller-passed 0 (OS-assigned free port) is preserved.
+    // Using || would silently coerce 0 to DEFAULT_PORT, breaking tests
+    // that bind ephemeral ports in parallel.
+    this.port = opts.port ?? DEFAULT_PORT;
     this.core = opts.core; // required: must emit 'a2a' events
     this.a2aLog = opts.a2aLog || null; // optional: for persistence + replay
     this.verbose = Boolean(opts.verbose);
@@ -189,6 +192,14 @@ class A2aBridge {
         resolve();
       });
     });
+  }
+
+  /**
+   * Whether the WebSocket server is currently bound and listening.
+   * `false` before `start()` resolves and after `stop()` resolves.
+   */
+  get running() {
+    return this._wss !== null;
   }
 
   /**

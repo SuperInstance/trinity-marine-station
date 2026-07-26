@@ -20,6 +20,7 @@ station:
 | **L2 Cognitive** | **trinity-marine-station** | Node | JEPA world model, anomaly energy, A2A workspace mutations |
 | **L3 Narrative** | **trinity-marine-station** | Node | LLM narrator, stream-of-consciousness markdown, prose + A2A split |
 | **L3 Memory** | **trinity-marine-station** | Node | Vector store, retrievers, JEPA associations |
+| **L3.5 Delivery** | **trinity-marine-station** | Node | A2A bridge: WebSocket fanout + JSONL audit log + replay-on-reconnect |
 | **L4 Workspace** | Theia (both) | TS | Multi-panel UI, agent-chat panel, mutation surface |
 
 **The integration boundary is a WebSocket that carries triply-anchored JSON.**
@@ -107,7 +108,14 @@ implement.
                                  │  prose track (markdown) + <a2a> actions
                                  ▼
                       ┌──────────────────────────────────────────────────────┐
-                      │  Theia IDE  (panels, layout, JSON-RPC mutation)       │
+                      │  a2aLog.js          (durable JSONL audit log)         │
+                      │  a2aBridge.js       (WebSocket fanout :3002)          │
+                      │  a2aClient.js       (typed subscriber, used by Theia) │
+                      └──────────┬───────────────────────────────────────────┘
+                                 │  text JSON over WebSocket
+                                 ▼
+                      ┌──────────────────────────────────────────────────────┐
+                      │  Theia IDE  (panels, layout, mutation sink)           │
                       │  – morph_to_hazard_mode, raise_alert, …              │
                       └──────────────────────────────────────────────────────┘
 ```
@@ -219,19 +227,27 @@ remains (⏳) on the integration path.
   ingest and `EmbeddingRetriever` ready to drop in for the LLM context.
 - **`schemas.js`** — validators for A2A actions, JEPA energy, feature
   vectors, and the new vessel-agent core anchor.
-
-### 🔄 In this update
-
+- **`backend/a2aLog.js`** — append-only JSONL audit log with replay,
+  rotation, and corruption tolerance. The durability layer for the
+  bridge's idempotency and replay-on-reconnect.
+- **`backend/a2aBridge.js`** — WebSocket fanout on `ws://127.0.0.1:3002`.
+  Monotonic action IDs, replay-on-connect via `lastAckId`, persisted
+  `ack` checkpoints, ping/pong liveness. The L3 → L4 delivery seam.
+- **`backend/a2aClient.js`** — typed-style WS client. Hello handshake,
+  monotonic action IDs, auto-reconnect with exponential backoff, manual
+  `requestReplay`. The consumer side, ready to drop into Theia.
+- **`docs/PHASE5.md`** — canonical phase-5 reference: protocol, env
+  vars, run-time knobs, and forward work.
 - **`backend/h3.js`** — pure-JS H3-like indexer for lat/lon → uint64 hex
-  (lightweight; full H3 compat can swap in via `h3-js` later)
+  (lightweight; full H3 compat can swap in via `h3-js` later).
 - **`backend/vesselAgentAdapter.js`** — schema-bridge that normalizes both
   Signal K deltas *and* vessel-agent triply-anchored updates into a single
-  internal frame shape
-- **`schemas.js`** — adds `validateVesselAnchor()` and `validateTrinityDelta()`
+  internal frame shape.
+- **`schemas.js`** — adds `validateVesselAnchor()` and `validateTrinityDelta()`.
 - **`shared/events.js`** — adds `crew_report`, `fleet_report`, `anomaly`,
-  `workspace_morph` events
-- **`docs/SYNERGY.md`** — this document
-- **README.md** — cross-link to vessel-agent
+  `workspace_morph` events.
+- **`docs/SYNERGY.md`** — this document.
+- **README.md** — cross-link to vessel-agent.
 
 ### ⏳ Future work (clearly scoped seams)
 
@@ -244,8 +260,10 @@ remains (⏳) on the integration path.
 - **DuckDB read-side adapter** for retrospective A2A replay from archived
   features
 - **Theia extension** that actually consumes A2A `<a2a>` blocks and mutates
-  the workspace (today the A2A blocks are validated and emitted; the
-  consumer side is mocked)
+  the workspace. The server-side `a2aBridge.js` and the typed client
+  `a2aClient.js` are both shipped; what's missing is the Theia-side
+  consumer that calls `panel.mutate(action)` on every received action
+  (see `docs/PHASE5.md` for the exact API surface).
 
 ---
 
@@ -342,10 +360,114 @@ The `telemetryIngest.js` already supports `wss://` URLs out of the box (the
 | **Phase 3** | as above | + `spatial.h3Index`, `source.vessel_uuid` | 🔄 this update |
 | **Phase 4** | as above | + `crew_report.*`, `fleet_report.*` | 🔄 this update |
 | **Phase 5** | — | full `core_anchor` + acoustic tensor | ⏳ |
+| **Phase 5.5** | — | A2A bridge (WebSocket fanout + replay + ack) | ✅ shipped |
+| **Phase 5.6** | — | A2A client (typed, reconnect, manual replay) | ✅ shipped |
 
 Each phase is backward-compatible: the Signal K consumer keeps working; new
 fields simply unlock new cognitive features (H3-based spatial clustering,
 crew-report correlation, fleet intelligence).
+
+---
+
+## 7.5 The L3 → L4 seam: the A2A bridge
+
+The cognitive engine's job is to decide what should happen next. The
+workspace's job is to make it visible. The bridge between them is the
+**A2A WebSocket protocol** — the smallest possible contract that lets
+the LLM's `<a2a>...</a2a>` blocks (emitted at L3) mutate the workspace
+(at L4) without either side knowing the other's internals.
+
+### Why a bridge, not a direct coupling
+
+The cognitive engine and the workspace evolve at different cadences:
+
+- The cognitive engine may swap LLM backends (Ollama today, cloud tomorrow),
+  change prompt strategy, or add new action types.
+- The workspace may swap UI frameworks (Theia today, something else tomorrow).
+
+A direct call (`trinity_narrator.morphToHazardMode(panel)`) would couple
+both ends to each other's lifetime. A WebSocket bridge lets each side
+restart, crash, or be replaced independently. The protocol is the API.
+
+### The protocol in one paragraph
+
+A single WebSocket endpoint on `ws://127.0.0.1:3002` carries **text JSON
+frames only**. The server is authoritative for action IDs (monotonic,
+strictly increasing). Clients send a `hello` on connect with their
+`lastAckId`; the server replays any gap from the JSONL audit log, then
+transitions to live broadcast. Clients send `ack` messages to checkpoint
+idempotency. Periodic `ping`/`pong` frames keep the connection warm;
+silent clients are dropped after 3 missed pongs.
+
+### vessel-agent ↔ Trinity flow across the bridge
+
+```
+vessel-agent (Python)            trinity-marine-station (Node)
+─────────────────────            ─────────────────────────────
+BPF + ring buffer
+  └─ Parquet
+       └─ ZeroMQ agent bus
+            └─ core_anchor JSON
+                 │
+                 │  (NEW: WS bridge)
+                 ▼
+                                  telemetryIngest on :3000
+                                    └─ TrinityFrame
+                                         └─ JepaWorldModel
+                                              └─ LlmNarrator
+                                                   └─ <a2a>...</a2a>
+                                                        │
+                                                        ▼
+                                                   a2aLog (JSONL)        ← durability
+                                                        │
+                                                        ▼
+                                                   a2aBridge on :3002    ← delivery
+                                                        │
+                                                        │  text JSON over WS
+                                                        ▼
+                                                   a2aClient in Theia    ← mutation sink
+                                                        │
+                                                        ▼
+                                                   Theia panels mutate
+                                                   (morph_to_hazard_mode,
+                                                    raise_alert, etc.)
+```
+
+The bridge is the **only** seam that crosses the L3/L4 boundary. Every
+component above L3 stays in Node; every component below L4 stays in
+Eclipse Theia. The audit log on disk is the **durable handoff** —
+recovering from a missed message is just `client.requestReplay()`.
+
+### Three guarantees that come for free
+
+| Guarantee | Mechanism |
+|-----------|-----------|
+| **No duplicate application** | Server stamps every action with a monotonic `id`; client tracks `lastAckId`; replay only sends `id > lastAckId`. |
+| **No lost actions on reconnect** | Client sends `lastAckId` in the `hello` handshake on (re)connect; bridge replays the gap from the persisted log, then resumes live. |
+| **Liveness under load** | Server sends pings every 15s; client must respond with pongs within 45s or be terminated (backpressure). |
+
+### What this means for the vessel-agent integration
+
+The vessel-agent side doesn't need to talk to Theia directly. It only
+needs to ensure the **right side of the curtain** is healthy:
+
+1. `trinity_agent_daemon` is running with `BRIDGE_PORT=3002` (default).
+2. The Theia workspace has an `A2aClient` connected to `ws://localhost:3002`.
+3. vessel-agent's data is flowing into Trinity's `telemetryIngest` (the
+   L0/L1 boundary we've already shipped).
+
+That's the entire integration contract. Everything else — JEPA scoring,
+LLM narration, action validation, panel mutation — is internal to one
+side or the other.
+
+### Sources of truth
+
+- **Wire protocol details** (handshake, error envelopes, replay semantics):
+  [`docs/PHASE5.md`](../PHASE5.md).
+- **Run-time knobs** (env vars, port collision, shutdown order):
+  [`docs/OPERATIONS.md`](../OPERATIONS.md).
+- **Implementation**: `backend/a2aBridge.js` (server), `backend/a2aClient.js`
+  (client), `backend/a2aLog.js` (durable log).
 
 ---
 

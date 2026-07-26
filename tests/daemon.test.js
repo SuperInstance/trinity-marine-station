@@ -224,12 +224,16 @@ function get(port, p) {
   });
 
   // ---- TEST 5: shutdown chain is wired (manual teardown) ----
-  await test("teardown: core.stop, narrator.destroy, ingest.disconnect", async () => {
+  await test("teardown: core.stop, narrator.destroy, ingest.disconnect, bridge.stop", async () => {
     t.core.stop();
     t.narrator.destroy();
     t.ingest.disconnect();
     assert.equal(t.core.stats.running, false);
     assert.equal(t.ingest.isConnected, false);
+    // Stop the Phase 5 bridge too — otherwise its open WebSocket server
+    // would keep this test process alive after the assertions succeed.
+    if (t.a2aBridge) await t.a2aBridge.stop();
+    assert.equal(t.a2aBridge ? t.a2aBridge.running : true, false);
   });
 
   // Cleanup.

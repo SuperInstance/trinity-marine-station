@@ -37,9 +37,10 @@
                                    ▼
               ┌──────────────────────────────────────────┐
               │  Phase 5 — Theia workspace (IN PROGRESS) │
-              │  A2A bridge shipped (commit 07bddbb);    │
-              │  Theia IDE + JSON-RPC consumer pending.  │
-              │  See docs/PHASE5.md.                     │
+              │  ✅ WebSocket A2A bridge shipped         │
+              │     (a2aBridge.js + a2aClient.js)        │
+              │  ⏳ Theia IDE + bridge consumer pending  │
+              │  See docs/PHASE5.md for protocol.        │
               └──────────────────────────────────────────┘
 ```
 
@@ -65,6 +66,7 @@
 | **AI**   | `backend/healthCheck.js` | Probe runner + status aggregator for the daemon's `/health` endpoint. |
 | **AI**   | `backend/a2aLog.js` | Append-only JSONL audit log for every emitted A2A mutation. Batched writes, size-based rotation, replay across files. |
 | **AI**   | `backend/a2aBridge.js` | WebSocket server that fans out `A2AAction` events to subscribed frontends with replay-on-reconnect and ack-based idempotency. Port 3002. See [`docs/PHASE5.md`](./docs/PHASE5.md). |
+| **AI**   | `backend/a2aClient.js` | Typed-style WebSocket client for the bridge — hello handshake, monotonic action IDs, auto-reconnect with exponential backoff, manual replay. Used by the future Theia frontend. |
 | **Data** | `backend/h3.js` | Lightweight H3-style spatial indexer (drop-in compatible with `h3-js`). |
 | **Data** | `backend/vesselAgentAdapter.js` | Anti-corruption layer: normalizes Signal K + vessel-agent `core_anchor` JSON into a canonical `TrinityFrame`. |
 | **Test** | `tests/pipeline.test.js` | End-to-end Phase 1 verification (streamer + ingest + ring buffer). |
@@ -79,6 +81,8 @@
 | **Test** | `tests/h3.test.js` | H3 encoding determinism, locality, dateline wrap, haversine accuracy. |
 | **Test** | `tests/vesselAgentAdapter.test.js` | Signal K + vessel-agent normalization, schema round-trip, rejection paths. |
 | **Test** | `tests/a2aLog.test.js` | JSONL audit log: append, batching, rotation, replay, corruption tolerance, concurrency. |
+| **Test** | `tests/a2aBridge.test.js` | Bridge: hello handshake, replay-on-connect, ack persistence, ping/pong, malformed-payload dropping, multi-client fanout, graceful stop. |
+| **Test** | `tests/a2aClient.test.js` | Client: hello round-trip, monotonic action IDs, manual + auto replay, malformed JSON, error envelope, destroy cancels reconnect, reconnect give-up. |
 | **Test** | `tests/run.js` | Unified runner that discovers every `*.test.js`, aggregates exit codes, never lets a stray stderr line fail `npm test`. |
 
 ---
@@ -101,13 +105,11 @@ npm run ingest        # in terminal B: connects and logs feature vectors
 npm run narrator      # in terminal C: prints AI narration every 4s
 ```
 
-**Expected test output:**
-```
-[run.js] ✅ ALL TESTS PASSED
-   • ollama.smoke        PASS (skipped if Ollama down)
-   • pipeline            PASS (Phase 1, 11 checks)
-   • trinityLifecycle    PASS (9 checks + 1 live smoke)
-```
+**Expected test output:** the suite discovers 14 `*.test.js` files and
+expects every one to print `X pass / 0 fail` (or `passed, 0 failed`)
+followed by `[run.js] ✅ ALL TESTS PASSED`. Final tally is roughly
+**225 assertions across 14 suites**; ollama.smoke skips cleanly when
+Ollama isn't running.
 
 ---
 
@@ -168,29 +170,54 @@ For how the tests are structured and how to extend them, see [`docs/TESTING.md`]
 
 ```
 trinity-agent/
-├── backend/                        ← everything (data, pipe, AI)
-│   ├── marineConstants.js          Shared schema
-│   ├── navigationSimulator.js      Pure world model
-│   ├── mockSignalK.js              WebSocket broadcaster (port 3000)
-│   ├── ringBuffer.js               Pre-allocated Float64Array ring buffer
-│   ├── telemetryIngest.js          Consumer pipeline
-│   ├── jepaWorldModel.js           Energy-score predictor
-│   ├── llmBackends.js              HttpLlmBackend + MockLlmBackend
-│   ├── llmNarrator.js              Conscious narrator + stream splitter
-│   └── trinityCore.js              Orchestrator (anomaly → emergency)
-├── shared/                         Shared type/constant modules
-├── frontend/                       Reserved for Phase 4 (Theia)
-├── cognitive-engine/               Reserved for future Trinity expansions
+├── backend/                          ← data, pipe, AI, and the A2A bridge
+│   ├── marineConstants.js            Shared schema
+│   ├── navigationSimulator.js        Pure world model
+│   ├── mockSignalK.js                WebSocket broadcaster (port 3000)
+│   ├── ringBuffer.js                 Pre-allocated Float64Array ring buffer
+│   ├── telemetryIngest.js            Consumer pipeline
+│   ├── h3.js                         H3-style spatial indexer
+│   ├── vesselAgentAdapter.js         Signal K + vessel-agent normalizer
+│   ├── jepaWorldModel.js             Energy-score predictor
+│   ├── llmBackends.js                HttpLlmBackend + MockLlmBackend
+│   ├── llmNarrator.js                Conscious narrator + stream splitter
+│   ├── trinityCore.js                Orchestrator (anomaly → emergency)
+│   ├── trinityDaemon.js              Production daemon + ops HTTP
+│   ├── vectorStore.js                In-memory float32 cosine store
+│   ├── schemas.js                    Validators (TrinityFrame, A2A, …)
+│   ├── circuitBreaker.js             3-state breaker around LLM backend
+│   ├── healthCheck.js                Probe runner for /health
+│   ├── a2aLog.js                     Durable JSONL audit log
+│   ├── a2aBridge.js                  WebSocket fanout (port 3002)
+│   └── a2aClient.js                  Typed subscriber for the bridge
+├── shared/                           Shared type/constant modules
+├── frontend/                         Reserved for Theia (Phase 5 IDE)
+├── cognitive-engine/                 Reserved for future Trinity expansions
 ├── docs/
-│   ├── ARCHITECTURE.md             Design deep-dive
-│   └── TESTING.md                  How the test suite is structured
+│   ├── ARCHITECTURE.md               Design deep-dive
+│   ├── OPERATIONS.md                 Run-time ops (incl. bridge section 5b)
+│   ├── PHASE5.md                     A2A bridge protocol reference
+│   ├── SYNERGY.md                    Cross-system integration (vessel-agent)
+│   └── TESTING.md                    How the test suite is structured
 ├── tests/
-│   ├── run.js                      Unified test runner
-│   ├── pipeline.test.js            Phase 1 end-to-end
-│   ├── trinityLifecycle.test.js    Phase 3 full lifecycle
-│   ├── ollama.smoke.test.js        Live Ollama integration (opt-in)
-│   ├── streamer.smoke.js           (legacy) streamer-only check
-│   └── streamer.payloadShape.js    (legacy) dumps one heartbeat payload
+│   ├── run.js                        Unified test runner
+│   ├── pipeline.test.js              Phase 1 end-to-end
+│   ├── trinityLifecycle.test.js      Phase 3 full lifecycle
+│   ├── daemon.test.js                Spawns daemon, exercises /health + /status
+│   ├── a2aBridge.test.js             Bridge: handshake, replay, ack, ping/pong
+│   ├── a2aClient.test.js             Client: connect, replay, reconnect, give-up
+│   ├── a2aLog.test.js                Audit log: append, rotation, replay
+│   ├── circuitBreaker.test.js        Breaker state machine
+│   ├── healthCheck.test.js           Probe runner + aggregator
+│   ├── h3.test.js                    H3 indexer accuracy
+│   ├── vesselAgentAdapter.test.js    Adapter normalization
+│   ├── vectorStore.test.js           Cosine / dot / L2, growth, retriever
+│   ├── schemas.test.js               Every validator: success + rejection
+│   ├── openai.smoke.test.js          OpenAI-compatible backend
+│   ├── ollama.smoke.test.js          Live Ollama integration (skips if down)
+│   ├── streamer.smoke.js             (legacy) streamer-only check
+│   └── streamer.payloadShape.js      (legacy) dumps one heartbeat payload
+├── logs/a2a/                         Append-only JSONL audit log directory
 ├── package.json
 └── README.md
 ```
@@ -277,6 +304,43 @@ The daemon flushes & destroys the log on `SIGINT`/`SIGTERM`, so no in-flight mut
 
 ---
 
+## A2A WebSocket bridge
+
+The persisted log is the **durability** layer. The **delivery** layer is the
+A2A bridge — a tiny WebSocket fanout on port `3002` that pushes validated
+mutations to any subscribed frontend (today: none yet; tomorrow: Theia).
+
+```
+TrinityDaemon ──► A2aLog (durability) ─► A2aBridge (:3002) ─► A2aClient
+                       │                       │                    │
+                  JSONL files             live broadcast      Theia panels
+                  (replay-able)           (replay-on-connect)  (mutation sink)
+```
+
+Three guarantees knock out the usual WebSocket pain:
+
+| Guarantee | How |
+|-----------|-----|
+| **No duplicate application** | Server stamps every action with a monotonic `id`; client persists `lastAckId`; replay only sends `id > lastAckId`. |
+| **No lost actions on reconnect** | Client sends `lastAckId` in the `hello` handshake; server replays the gap from the log, then resumes live. |
+| **Liveness under load** | Server heartbeats every 15s; 3 missed pings in a row → connection terminated with backpressure metric. |
+
+Minimal client (intended for Theia):
+
+```js
+const { A2aClient } = require("./backend/a2aClient");
+const c = new A2aClient({ url: "ws://127.0.0.1:3002" });
+c.on("action", (a) => panelMutate(a));
+c.on("replay_end", () => c.ack(a.id));   // idempotency checkpoint
+c.connect();
+```
+
+Full protocol (handshake, error envelopes, replay semantics, env vars) lives
+in [`docs/PHASE5.md`](./docs/PHASE5.md). Run-time knobs are documented under
+[`docs/OPERATIONS.md`](./docs/OPERATIONS.md#5b-the-a2a-websocket-bridge).
+
+---
+
 ## Phase status
 
 | Phase | Title                          | Status |
@@ -286,7 +350,7 @@ The daemon flushes & destroys the log on `SIGINT`/`SIGTERM`, so no in-flight mut
 | **3** | Conscious Narrator + A2A       | ✅ Complete (Ollama + Mock, anomaly-driven emergency) |
 | **3.5** | Daemon, Vector Store, Cloud Backend | ✅ Complete (unified daemon + OpenAI-compatible backend) |
 | **4** | vessel-agent Integration       | ✅ Complete (anti-corruption adapter, H3 indexing, provenance) |
-| **5** | Theia Modular Workspace        | ⏳ Next — JSON-RPC A2A bridge + Theia extension |
+| **5** | Theia Modular Workspace        | 🔄 In progress — WebSocket A2A bridge (server + client) shipped; Theia IDE consumer pending |
 
 ---
 

@@ -25,6 +25,8 @@
     "test:h3":           "node tests/h3.test.js",
     "test:vessel":       "node tests/vesselAgentAdapter.test.js",
     "test:a2alog":       "node tests/a2aLog.test.js",
+    "test:a2abridge":    "node tests/a2aBridge.test.js",
+    "test:a2aclient":    "node tests/a2aClient.test.js",
     "test":              "node tests/run.js"
   },
   "engines": {
