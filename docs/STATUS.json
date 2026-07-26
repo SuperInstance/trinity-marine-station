@@ -3,7 +3,7 @@
   "$id": "https://github.com/SuperInstance/trinity-marine-station/blob/main/docs/STATUS.json",
   "title": "Trinity Marine Station - Project Status Manifest",
   "description": "Agentic-first marine navigation station. Real-time ingestion of vessel telemetry, JEPA-style anomaly detection, local LLM narration, and a WebSocket A2A bridge to a future Eclipse Theia workspace.",
-  "generated_at": "2026-07-26T19:58:20.343Z",
+  "generated_at": "2026-07-26T21:04:12.450Z",
   "_comment": "Update 'generated_at' whenever this file is edited. Update 'commit' to the latest shipped commit hash (HEAD on main, when working tree is clean).",
   "name": "trinity-marine-station",
   "display_name": "Trinity Marine Station",
@@ -15,7 +15,7 @@
     "role": "L0/L1 data capture (NMEA, acoustic, catch); upstream of Trinity's L2 cognitive layer"
   },
   "license": "private (no license declared yet)",
-  "commit": "db076f37686fe0c6da0179478d25be4fd123d522",
+  "commit": "7e8ddf2c2365c40fe65c5856a339adaef5deb2d8",
   "branch": "main",
   "node_version_required": ">=18.0.0",
   "language": "JavaScript (Node.js, plain JS with JSDoc; no build step)",
