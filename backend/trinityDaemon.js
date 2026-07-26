@@ -68,6 +68,9 @@ const {
   A2aBridge,
 } = require("./a2aBridge");
 const {
+  WatcherRegistry,
+} = require("./watchers");
+const {
   STREAMER_HOST,
   STREAMER_PORT,
 } = require("./marineConstants");
@@ -145,6 +148,13 @@ function loadConfig(env = process.env) {
     bridgeHost:      env.BRIDGE_HOST ?? DEFAULT_BRIDGE_HOST,
     bridgePort:      env.BRIDGE_PORT ? Number(env.BRIDGE_PORT) : DEFAULT_BRIDGE_PORT,
     bridgeDisabled:  env.BRIDGE_DISABLED === "1" || env.BRIDGE_DISABLED === "true",
+
+    // Watchers (Phase 7 — deterministic A2A rules, see backend/watchers.js
+    // and docs/AELMA_SYNTHESIS.md). WATCHERS_DISABLED=1 turns them off; the
+    // daemon defaults to on because the built-in rules are conservative
+    // (raise_alert on shallow water, highlight_waypoint on heading drift)
+    // and the LLM is informed rather than bypassed.
+    watchersDisabled: env.WATCHERS_DISABLED === "1" || env.WATCHERS_DISABLED === "true",
   };
 
   // Source description (used in startup banner)
@@ -197,6 +207,54 @@ function stopStreamer() {
     proc.on("exit", () => { clearTimeout(t); resolve(); });
     try { proc.kill("SIGTERM"); } catch {}
   });
+}
+
+// ===========================================================================
+// Default watcher rule set
+// ----------------------------------------------------------------------------
+// A small, conservative set of deterministic rules that fire before the LLM
+// is consulted. Each rule emits a single A2A action and tags it with
+// source: "watcher" so downstream consumers can distinguish watcher-fired
+// from narrator-issued actions. Rules here are deliberately simple — anything
+// nuanced belongs in the LLM. See backend/watchers.js and
+// docs/AELMA_SYNTHESIS.md for the design rationale.
+// ===========================================================================
+function buildDefaultWatchers() {
+  const reg = new WatcherRegistry();
+  reg.add({
+    id: "shallow-water",
+    name: "Shallow water warning",
+    when: (f) => f && f.depth != null && f.depth < 2.0,
+    action: {
+      name: "raise_alert",
+      payload: (f) => ({ kind: "shallow_water", depth: f.depth }),
+      reason: (f) => `depth=${f.depth.toFixed(2)}m < 2.0m threshold`,
+      priority: () => 0.85,
+    },
+  });
+  reg.add({
+    id: "heading-off-course",
+    name: "Heading deviates from expected range",
+    when: (f) => f && f.headingTrue != null && (f.headingTrue < 10 || f.headingTrue > 350),
+    action: {
+      name: "highlight_waypoint",
+      payload: (f) => ({ heading: f.headingTrue }),
+      reason: (f) => `heading=${f.headingTrue.toFixed(1)}° is outside [10, 350]°`,
+      priority: () => 0.6,
+    },
+  });
+  reg.add({
+    id: "speed-anomaly",
+    name: "Unusual speed (likely a stale or lost sensor)",
+    when: (f) => f && f.speedOverGround != null && f.speedOverGround > 30,
+    action: {
+      name: "announce",
+      payload: (f) => ({ kind: "speed_anomaly", sog: f.speedOverGround }),
+      reason: (f) => `speed=${f.speedOverGround.toFixed(1)}kt > 30kt (likely sensor fault)`,
+      priority: () => 0.7,
+    },
+  });
+  return reg;
 }
 
 // ===========================================================================
@@ -294,11 +352,17 @@ async function buildTrinity(cfg) {
     normalIntervalMs: cfg.normalIntervalMs,
   });
 
+  // Watcher registry — deterministic threshold rules that emit A2A
+  // actions before the LLM is consulted. Disabled with WATCHERS_DISABLED=1.
+  // See backend/watchers.js and docs/AELMA_SYNTHESIS.md.
+  const watchers = cfg.watchersDisabled ? null : buildDefaultWatchers();
+
   const core = new TrinityCore({
     ringBuffer: ingest.buffer,
     jepa,
     narrator,
     retriever,
+    watchers,
     intervalMs: 500,
   });
 
@@ -391,7 +455,7 @@ async function buildTrinity(cfg) {
   });
 
   return {
-    backend, ingest, jepa, narrator, core, retriever, store, a2aLog, a2aBridge,
+    backend, ingest, jepa, narrator, core, retriever, store, a2aLog, a2aBridge, watchers,
     ringBuffer: ingest.buffer,
     frameBuffer,
     snapshot: () => ({
@@ -408,6 +472,9 @@ async function buildTrinity(cfg) {
       narrator: narrator.stats,
       core:     core.stats,
       retriever: { size: retriever.size },
+      watchers: watchers
+        ? { ruleCount: watchers.size, rules: watchers.list() }
+        : { disabled: true },
       a2aLog:   a2aLog ? a2aLog.stats() : { disabled: true },
       a2aBridge: a2aBridge
         ? {

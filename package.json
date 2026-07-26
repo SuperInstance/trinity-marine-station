@@ -36,6 +36,8 @@
     "test:a2abridge":    "node tests/a2aBridge.test.js",
     "test:a2aclient":    "node tests/a2aClient.test.js",
     "test:a2aquery":    "node tests/a2aQuery.test.js",
+    "test:watchers":    "node tests/watchers.test.js",
+    "test:corewatchers": "node tests/trinityCoreWatchers.test.js",
     "test":              "node tests/run.js"
   },
   "engines": {

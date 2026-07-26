@@ -46,6 +46,12 @@ class TrinityCore extends EventEmitter {
    * @param {object} opts.jepa         JepaWorldModel instance.
    * @param {object} opts.narrator     LlmNarrator instance.
    * @param {object} [opts.retriever]  Optional Retriever-like object with .retrieve(vec) -> RetrievedContextChunk[].
+   * @param {object} [opts.watchers]   Optional WatcherRegistry (backend/watchers.js). If supplied,
+   *                                    deterministic threshold rules can emit A2A actions before the
+   *                                    LLM is consulted. Watcher-fired actions are routed through
+   *                                    this core's 'a2a' event so they share the same persistence,
+   *                                    broadcast, and LLM-notification path as narrator-issued
+   *                                    actions. See docs/AELMA_SYNTHESIS.md for the design rationale.
    * @param {number} [opts.intervalMs=500]   Loop period in ms.
    * @param {number} [opts.anomalyThreshold] Override JEPA threshold.
    */
@@ -59,6 +65,7 @@ class TrinityCore extends EventEmitter {
     this._jepa   = opts.jepa;
     this._narr   = opts.narrator;
     this._retr   = opts.retriever ?? { retrieve: async () => [] };
+    this._watchers = opts.watchers ?? null;  // optional; see JSDoc
     this._period = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
     this._threshold = opts.anomalyThreshold ?? this._jepa.anomalyThreshold;
 
@@ -68,12 +75,34 @@ class TrinityCore extends EventEmitter {
     this._lastEnergy   = null;
     this._emergencyCount = 0;
     this._peacefulCount = 0;
+    this._watcherFiredCount = 0;
+    this._watcherErrorCount = 0;
 
     // Forward narrator events so consumers only need one EventEmitter.
     this._narr.on("prose",     (t) => this.emit("prose", t));
     this._narr.on("a2a",       (a) => this.emit("a2a", a));
     this._narr.on("malformed", (m) => this.emit("malformed", m));
     this._narr.on("error",     (e) => this.emit("narrator-error", e));
+
+    // Wire watcher events so consumers see the same shape from one emitter.
+    if (this._watchers) {
+      this._watchers.on("fired", (action, info) => {
+        this._watcherFiredCount += 1;
+        // Stamp the source so downstream consumers can tell LLM vs watcher.
+        const stamped = Object.freeze({
+          ...action,
+          source: "watcher",
+          ruleId: info.ruleId,
+          ruleName: info.ruleName,
+        });
+        this.emit("a2a", stamped);
+        this.emit("watcher-fired", stamped, info);
+      });
+      this._watchers.on("error", (err, info) => {
+        this._watcherErrorCount += 1;
+        this.emit("watcher-error", err, info);
+      });
+    }
 
     // JEPA anomalies: we re-route them too so a test/UI can subscribe.
     this._jepa.on("energy", (reading) => {
@@ -104,17 +133,20 @@ class TrinityCore extends EventEmitter {
    */
   get stats() {
     return {
-      running:        this._running,
-      peacefulCount:  this._peacefulCount,
-      emergencyCount: this._emergencyCount,
-      threshold:      this._threshold,
-      narratorStats:  this._narr.stats,
-      jepaTicks:      this._jepa.tickCount,
+      running:            this._running,
+      peacefulCount:      this._peacefulCount,
+      emergencyCount:     this._emergencyCount,
+      watcherFiredCount:  this._watcherFiredCount,
+      watcherErrorCount:  this._watcherErrorCount,
+      threshold:          this._threshold,
+      narratorStats:      this._narr.stats,
+      jepaTicks:          this._jepa.tickCount,
     };
   }
   get ringBuffer() { return this._ring; }
   get jepa()       { return this._jepa; }
   get narrator()   { return this._narr; }
+  get watchers()   { return this._watchers; }
 
   // -----------------------------------------------------------------------
   // Internals
@@ -142,6 +174,17 @@ class TrinityCore extends EventEmitter {
     const energy = this._jepa.observe(frame);
     this._lastEnergy = energy;
     this.emit("tick", { frame, energy });
+
+    // 2b. Deterministic watcher rules (if a WatcherRegistry was provided).
+    // Watchers run *before* the LLM so time-critical alerts (shallow water,
+    // heading off-course) are not delayed by an LLM round-trip. The
+    // 'a2a' event handler above stamps source: "watcher" and forwards
+    // them through the same persistence + broadcast path as LLM-issued
+    // actions. Errors are caught by the registry itself; we do not need
+    // a try/catch here unless we want to swallow the registry entirely.
+    if (this._watchers) {
+      this._watchers.evaluate(frame);
+    }
 
     // 3. Branch.
     if (energy.anomaly) {

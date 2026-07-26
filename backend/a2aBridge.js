@@ -131,6 +131,14 @@ class A2aBridge {
       const onListening = async () => {
         wss.removeListener("error", onError);
         this._wss = wss;
+        // If we asked for port 0 (OS-assigned), record the real port
+        // so stats() reports an accurate value for /status consumers.
+        try {
+          const addr = wss._server && wss._server.address();
+          if (addr && typeof addr.port === "number" && this.port === 0) {
+            this.port = addr.port;
+          }
+        } catch (_) { /* best-effort */ }
         // Resume monotonic IDs from the log so newly-issued IDs don't
         // collide with replayed ones.
         if (this.a2aLog) {

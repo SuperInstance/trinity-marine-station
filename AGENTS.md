@@ -74,6 +74,8 @@ Approximate total tests: ~3,950 lines across 18 files.
 | `backend/a2aBridge.js`     | 446 | WebSocket server (port 3002). Hello, replay, ack, ping/pong, graceful shutdown. Sync-then-broadcast durability (Phase 6). |
 | `backend/a2aClient.js`     | 457 | Typed WS client. Auto-reconnect, manual replay, destroy. |
 | `backend/a2aQuery.js`      | 281 | Read-side query layer over the JSONL action log. Pure JS, no native deps. Filters, countBy/topBy, time-bucket, summary. |
+
+| `backend/watchers.js`      | 340 | Deterministic A2A rule engine (Phase 7). Pure-function predicates over `FeatureVector`; fires A2A actions through trinityCore's `a2a` event so the LLM is informed rather than bypassed. Inspired by AELMA 'Watcher NPCs' pattern (docs/AELMA_SYNTHESIS.md). |
 | `backend/schemas.js`       | 429 | Validators for every wire shape. Add new shapes here. |
 | `backend/telemetryIngest.js` | 323 | WebSocket consumer. Hello handshake, exponential backoff, frame parsing. |
 | `backend/a2aLog.js`        | 307 | Append-only JSONL audit log. Batched writes, rotation, replay. |
@@ -86,6 +88,10 @@ Approximate total tests: ~3,950 lines across 18 files.
 | `backend/a2aClient.test.js` | 465 | 16 cases. |
 | `backend/a2aLog.test.js`    | 361 | 18 cases. |
 | `tests/a2aQuery.test.js`    | 484 | 38 cases (helpers + integration). |
+
+| `tests/watchers.test.js`    | 470 | 47 cases. Pure-registry behavior: registration, evaluation, error isolation, validation. |
+
+| `tests/trinityCoreWatchers.test.js` | 290 | 11 cases. Integration: registry -> core -> a2a event. Verifies source='watcher' stamp + LLM-notification design. |
 | `backend/trinityLifecycle.test.js` | 274 | 9 cases + live WS smoke. |
 | `backend/pipeline.test.js`  | 264 | 11 cases (streamer + ingest + ring buffer). |
 | `backend/daemon.test.js`    | 228 | 6 cases. |
@@ -251,6 +257,7 @@ time, so memory stays bounded by line length, not file size.
 | A new env var | `backend/trinityDaemon.js` (read), `docs/OPERATIONS.md` (document) |
 | A new test suite | Drop `*.test.js` in `tests/` — auto-discovered |
 | A new query filter / aggregation | `backend/a2aQuery.js` (`recordMatches`, `query`, `countBy`, `topBy`, `bucketBy`, `summary`) |
+| A new deterministic A2A rule | `backend/watchers.js` (add to a `WatcherRegistry`); the daemon installs `buildDefaultWatchers()` so rules fire before the LLM. Watcher-fired actions are stamped with `source: "watcher"`. |
 
 ---
 
@@ -278,20 +285,29 @@ time, so memory stays bounded by line length, not file size.
 
 ---
 
-## 8. The future plan (Phase 6 candidates)
+## 8. The future plan (Phase 7+ candidates)
 
-**Phase 6 progress so far:**
+**Phase 6 progress (all shipped):**
 
 - [x] **Sync-then-broadcast bridge fix** (shipped 2026-07-26, commit `486c1e9`). `_broadcastAction` awaits `log.append()` before sending to clients; `actionsDropped` counter added; 3 new tests pin the invariant. See `docs/PHASE5.md §5.1` for the durability analysis and gotcha #1 above for the implementation summary.
-- [x] **Read-side query layer** (shipped 2026-07-26, commit forthcoming). `backend/a2aQuery.js` provides a DuckDB-substitute in pure JS — streaming filter, countBy/topBy, time-bucketing, summary. No native deps. Use it for retrospective analysis: "how many `morph_to_hazard_mode` fired per hour over the last 24h?", "top 5 reasons for `raise_alert`", etc. 38 new tests cover it.
+- [x] **Read-side query layer** (shipped 2026-07-26, commits `db6285d` + `22e72de`). `backend/a2aQuery.js` provides a DuckDB-substitute in pure JS — streaming filter, countBy/topBy, time-bucketing, summary. No native deps. 38 tests cover it.
+- [x] **A2A allow-list single-source-of-truth** (shipped 2026-07-26, commit `7e8ddf2`). `schemas.js` is authoritative; `tools/regenSchema.js` regenerates `docs/a2a/SCHEMA.json`; `tools/auditSchema.js` catches drift. Future agents adding an action: edit `schemas.js` -> run `npm run regen:schema` -> commit code + docs together.
+- [x] **Bounded-replay overflow protection** (shipped 2026-07-26, commit `db076f3`). `A2aClient` caps replay at `maxReplayBytes` (default 8 MiB) and fires a one-shot `onReplayOverflow` callback + `replay_truncated` event so reconnecting clients don't drown in a multi-day backlog. 7 new tests cover happy-path, limit, infinity, reset, resume-live.
 
-**Remaining candidates, ranked by value-per-line:**
+**Phase 7 progress:**
 
-1. **Theia extension** (TypeScript, lives in `frontend/`). The `A2aClient` is ready to drop in. Need: a panel that reads `morph_to_hazard_mode` and visually switches the workspace; basic JSON-RPC plumbing. ~200 LOC.
-2. **Real vessel-agent → WS bridge** (Python, ships in `vessel-agent`). ~80 LOC. Just publishes the trinity delta format at `ws://localhost:3000`.
-3. **`h3-js` integration** for production-grade H3 (current is a quantized-grid approximation). Drop-in replacement of `backend/h3.js`.
+- [x] **Deterministic Watcher Rules** (AELMA-inspired, shipped this round). `backend/watchers.js` provides a `WatcherRegistry` where each rule has a `when(frame)` predicate + an `action` template. The daemon installs 3 defaults (`shallow-water`, `heading-off-course`, `speed-anomaly`) in `buildDefaultWatchers()`. Watchers fire BEFORE the LLM is consulted, but the resulting A2A actions are routed through `trinityCore`'s existing `'a2a'` event so they share persistence + broadcast + LLM-notification. The LLM is informed, not bypassed. 47 pure-registry tests + 11 integration tests pin the design. Toggle with `WATCHERS_DISABLED=1`.
 
-If you are a future agent and need to pick one: **#1 (Theia extension)** closes the cognitive loop the most of these. The repo is currently "talks to itself" — the bridge fans out, but no UI listens. Theia is where the operator (captain) finally sees the system.
+**Remaining Phase 7+ candidates, ranked by value-per-line:**
+
+1. **Theia extension** (TypeScript, lives in `frontend/`). The `A2aClient` is ready to drop in. Need: a panel that reads `morph_to_hazard_mode` and visually switches the workspace; basic JSON-RPC plumbing. ~200 LOC. **Cross-repo.**
+2. **Real vessel-agent -> WS bridge** (Python, ships in `vessel-agent`). ~80 LOC. Just publishes the trinity delta format at `ws://localhost:3000`. **Cross-repo.**
+3. **`predict(counterfactual)` on JEPA world model** ("Divination" from AELMA). Returns the expected trajectory delta for a hypothetical action without committing. ~200 LOC. **In-repo but research-flavored** — a 200-LOC first cut would be either trivial or wrong; recommend planning round first.
+4. **Spatial layer (scene graph of physical components)**. Zone-based query API for spatial relationships ("engine room + 1.2ft from hydraulic line"). ~300 LOC. No new deps; `h3` already shipped. **In-repo architectural commitment.**
+5. **A2A action parameter schemas** + LLM tool-calling integration. Each allowed action gets a `parameters` block; narrator emits structured function calls instead of plain-text `<a2a>` blocks. ~250 LOC. **In-repo.**
+6. **`h3-js` integration** for production-grade H3 (current is a quantized-grid approximation). Drop-in replacement of `backend/h3.js`. ~50 LOC. **In-repo.**
+
+If you are a future agent and need to pick one: **#1 (Theia extension)** closes the cognitive loop most — the repo currently "talks to itself", the bridge fans out, but no UI listens. Theia is where the operator (captain) finally sees the system. **#5 (A2A parameter schemas)** is the highest-leverage purely-in-repo pick because it unlocks structured narrator -> watcher hand-off.
 
 ---
 
@@ -341,6 +357,7 @@ The repo ships six auditors that catch the most common drift bugs:
 | `tools/auditRequires.js` | Missing/typo'd `require()` paths | Before any commit that touches backend/ or tests/ |
 | `tools/auditSchema.js` | SCHEMA.json / EXAMPLES.jsonl / *.md use action names not in `A2A_ALLOWED_ACTIONS` | Before any commit that touches `docs/a2a/` or `backend/schemas.js` |
 | `tools/smokeDaemon.js` | Daemon won't boot, /status missing a2aBridge | After daemon changes |
+| `tools/smokeBridgeClient.js` | End-to-end WS round-trip — connect, broadcast, ack, reconnect+replay | After bridge/client changes |
 | `tools/lint.js` | Syntax errors, stray tabs, console.log in backend | Every commit |
 
 **Fastest sanity check:**

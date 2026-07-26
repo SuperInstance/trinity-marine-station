@@ -3,7 +3,7 @@
   "$id": "https://github.com/SuperInstance/trinity-marine-station/blob/main/docs/STATUS.json",
   "title": "Trinity Marine Station - Project Status Manifest",
   "description": "Agentic-first marine navigation station. Real-time ingestion of vessel telemetry, JEPA-style anomaly detection, local LLM narration, and a WebSocket A2A bridge to a future Eclipse Theia workspace.",
-  "generated_at": "2026-07-26T21:23:11.119Z",
+  "generated_at": "2026-07-26T23:00:25.373Z",
   "_comment": "Update 'generated_at' whenever this file is edited. Update 'commit' to the latest shipped commit hash (HEAD on main, when working tree is clean).",
   "name": "trinity-marine-station",
   "display_name": "Trinity Marine Station",
@@ -15,7 +15,7 @@
     "role": "L0/L1 data capture (NMEA, acoustic, catch); upstream of Trinity's L2 cognitive layer"
   },
   "license": "private (no license declared yet)",
-  "commit": "d27be626b80198c9e2e83c037dd3e3c9582acc32",
+  "commit": "6fd1faf566a38a885dcd2ec8d29094bab870a29a",
   "branch": "main",
   "node_version_required": ">=18.0.0",
   "language": "JavaScript (Node.js, plain JS with JSDoc; no build step)",
@@ -117,6 +117,16 @@
         "h3-js integration for production-grade H3"
       ]
     },
+    "7": {
+      "title": "Deterministic Watcher Rules (AELMA-inspired)",
+      "status": "complete",
+      "shipped": "2026-07-26",
+      "modules": [
+        "backend/watchers.js"
+      ],
+      "rationale": "Borrowed from AELMA 'Watcher NPCs' pattern. Threshold-based deterministic predicates over FeatureVector frames emit A2A actions BEFORE the LLM is consulted, so time-critical alerts (shallow water, heading drift, sensor faults) are not delayed by an LLM round-trip. Watcher-fired actions are routed through trinityCore's existing 'a2a' event so they share the same persistence + broadcast + LLM-notification path as narrator-issued actions (the LLM is informed, not bypassed).",
+      "see_also": "docs/AELMA_SYNTHESIS.md, backend/watchers.js, tests/watchers.test.js, tests/trinityCoreWatchers.test.js"
+    },
     "3.5": {
       "title": "Daemon, Vector Store, Cloud Backend",
       "status": "complete",
@@ -139,7 +149,7 @@
   },
   "modules": {
     "backend/a2aBridge.js": {
-      "lines": 526,
+      "lines": 534,
       "phase": 5,
       "exports": [
         "A2aBridge"
@@ -221,6 +231,22 @@
       "tests": 38,
       "purpose": "Read-side query layer over A2aLog JSONL files. Pure-JS streaming filter, countBy/topBy, time-bucketing, summary. No native deps."
     },
+    "backend/watchers.js": {
+      "lines": 340,
+      "phase": 7,
+      "exports": [
+        "WatcherRegistry"
+      ],
+      "deps_internal": [
+        "shared/types.js"
+      ],
+      "deps_external": [
+        "events"
+      ],
+      "test_file": "tests/watchers.test.js",
+      "tests": 47,
+      "purpose": "Deterministic A2A rule engine. Pure-function predicates over FeatureVector frames. Watcher-fired actions are routed through trinityCore's 'a2a' event so they share the same persistence + broadcast + LLM-notification path as narrator-issued actions (LLM is informed, not bypassed). Inspired by AELMA 'Watcher NPCs' pattern."
+    },
     "backend/vesselAgentAdapter.js": {
       "lines": 271,
       "phase": 4,
@@ -238,7 +264,7 @@
       "purpose": "Anti-corruption layer. Normalizes Signal K deltas and vessel-agent core_anchor JSON into canonical TrinityFrame."
     },
     "backend/trinityDaemon.js": {
-      "lines": 538,
+      "lines": 605,
       "phase": 3.5,
       "exports": [
         "startDaemon",
@@ -318,7 +344,7 @@
       "purpose": "Linear predictor over feature vectors. Emits energy score 0..1; >0.5 = anomaly."
     },
     "backend/trinityCore.js": {
-      "lines": 192,
+      "lines": 235,
       "phase": 3,
       "exports": [
         "TrinityCore"
@@ -581,7 +607,7 @@
   },
   "tests": {
     "total_suites": 14,
-    "total_assertions_approx": 225,
+    "total_assertions_approx": 357,
     "suites": [
       {
         "file": "tests/pipeline.test.js",
@@ -603,14 +629,14 @@
       },
       {
         "file": "tests/a2aBridge.test.js",
-        "assertions": 15,
-        "covers": "bridge wire protocol",
+        "assertions": 18,
+        "covers": "bridge wire protocol (incl. P6 sync-then-broadcast ordering)",
         "lines": 629
       },
       {
         "file": "tests/a2aClient.test.js",
-        "assertions": 16,
-        "covers": "client reconnect + replay",
+        "assertions": 23,
+        "covers": "client reconnect + replay (incl. bounded-replay overflow)",
         "lines": 778
       },
       {
@@ -624,6 +650,18 @@
         "assertions": 38,
         "covers": "read-side query layer (filters, countBy, topBy, bucketBy, summary)",
         "lines": 548
+      },
+      {
+        "file": "tests/watchers.test.js",
+        "assertions": 47,
+        "covers": "deterministic A2A rule engine (registration, evaluation, error isolation)",
+        "lines": 586
+      },
+      {
+        "file": "tests/trinityCoreWatchers.test.js",
+        "assertions": 11,
+        "covers": "watchers wired into trinityCore 'a2a' event (Phase 7 integration)",
+        "lines": 328
       },
       {
         "file": "tests/circuitBreaker.test.js",
@@ -834,7 +872,17 @@
       "value": "highest",
       "why": "Threshold-based event emission bypasses LLM for obvious cases. Borrowed from AELMA 'Watcher NPCs'. ~150 LOC.",
       "blocks": "LLM latency for high-frequency cases",
-      "source": "docs/AELMA_SYNTHESIS.md"
+      "source": "docs/AELMA_SYNTHESIS.md",
+      "status": "shipped",
+      "shipped_in_commit": "pending-commit",
+      "shipped_on": "2026-07-26",
+      "shipped_modules": [
+        "backend/watchers.js",
+        "tests/watchers.test.js",
+        "tests/trinityCoreWatchers.test.js"
+      ],
+      "shipped_tests": "47 + 11 integration",
+      "shipped_persistence_note": "Built-in default rules (shallow-water, heading-off-course, speed-anomaly) live in trinityDaemon buildDefaultWatchers(). Toggle with WATCHERS_DISABLED=1 env var."
     },
     {
       "title": "predict(counterfactual) on JEPA world model",
