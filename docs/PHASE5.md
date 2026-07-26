@@ -329,20 +329,42 @@ Out of scope, deferred to a later phase:
 
 ### Durability gap: broadcast before append
 
-The bridge broadcasts an `action` to live clients before awaiting the
-`a2aLog.append()` write. If the bridge crashes between broadcast and append
-(write not yet flushed), a reconnecting client with `lastAckedId = id-1`
-will not see that action on replay — it's not on disk yet.
+**Status (Phase 6, 2026-07-26): FIXED.**
 
-**Mitigations in place:**
-- `A2aLog.append()` batches writes (~100ms) and `fsync`s on flush. The
-  window of vulnerability is therefore at most the batch interval.
-- Graceful shutdown calls `bridge.stop()` then `a2aLog.destroy()` in
-  order, so a clean SIGTERM never loses a write.
+The original Phase 5 bridge broadcast an `action` to live clients before
+awaiting the `a2aLog.append()` write. If the bridge crashed between
+broadcast and append, a reconnecting client with `lastAckedId = id-1`
+would not see that action on replay — it wasn't on disk yet.
 
-**Proper fix** (Phase 6 candidate): await the `a2aLog.append()` BEFORE
-broadcasting. Adds bounded latency to the live path. Trade-off worth
-revisiting once action volume justifies it.
+**Resolution:** `_broadcastAction` is now `async` and `await`s the
+`a2aLog.append()` BEFORE iterating live clients. The new ordering
+invariant is enforced by three new tests in `tests/a2aBridge.test.js`:
+
+- `P6: action is persisted to log BEFORE broadcast (ordering invariant)`
+  — instruments the log with `append:start` / `append:done` markers and
+  asserts every `append:done X` precedes `client:received X` for every
+  action id X the client sees.
+- `P6: dropped action (append failure) is NOT broadcast` — sabotages
+  `a2aLog.append()` to always reject, asserts the client receives zero
+  actions, `actionsDropped` increments, and the burnt id is reclaimed so
+  the next successful action reuses it (no ID starvation).
+- `P6: stats.actionsDropped is exposed and starts at 0` — guards the
+  observability surface for ops dashboards.
+
+**Trade-off acknowledged:** each live action now incurs the cost of one
+`await log.append()`. Empirically this is well under 5ms because
+`A2aLog` batches writes within a 100ms flush window — the very first
+write in a window fsyncs, subsequent writes piggyback. For workloads
+producing actions faster than that, the bridge still keeps up; the only
+observable change is that clients receive actions slightly after the
+core emits them (bounded by the log write latency).
+
+**On `actionsDropped`:** if `a2aLog.append()` rejects (disk full, EIO,
+permission error), the bridge now drops the action entirely rather than
+broadcast a non-replayable id. The id is reclaimed so the next
+successful action gets the same number. Operators should monitor
+`bridge._stats.actionsDropped` (exposed via `/status`) and alert on
+non-zero values.
 
 ### Bridge and client are now both bound to localhost
 

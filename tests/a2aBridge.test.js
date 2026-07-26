@@ -480,4 +480,149 @@ run("a2aBridge", async () => {
     await cleanup();
   });
 
+  // -------------------------------------------------------------------------
+  // Phase 6: sync-then-broadcast durability tests
+  //
+  // These tests pin down the contract that a2aLog.append() MUST resolve
+  // before the action envelope is sent to clients. If we ever regress to
+  // fire-and-forget, these tests will fail.
+  // -------------------------------------------------------------------------
+
+  await test("P6: action is persisted to log BEFORE broadcast (ordering invariant)", async () => {
+    // We wrap the log to observe when append() resolves vs when the client
+    // receives the envelope. The invariant: every action id that the client
+    // sees MUST have been flushed to disk first.
+    const dir = tmpLogDir();
+    const log = new A2aLog({ dir });
+
+    const events = []; // chronological log of internal events
+    const origAppend = log.append.bind(log);
+    log.append = async (rec) => {
+      events.push({ kind: "append:start", id: rec.id });
+      const result = await origAppend(rec);
+      events.push({ kind: "append:done", id: rec.id });
+      return result;
+    };
+
+    const core = fakeCore();
+    const bridge = new A2aBridge({ core, a2aLog: log, port: 0 });
+    await bridge.start();
+    const port = bridge._wss._server.address().port;
+
+    try {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      await waitForMessage(ws, (m) => m.type === "hello");
+
+      // The client side: every received action id is recorded.
+      const clientReceived = [];
+      ws.on("message", (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === "action") {
+          events.push({ kind: "client:received", id: m.id });
+          clientReceived.push(m.id);
+        }
+      });
+
+      // Emit three actions in rapid succession.
+      core.emit("a2a", { action: "raise_alert", reason: "a", priority: 0.5 });
+      core.emit("a2a", { action: "raise_alert", reason: "b", priority: 0.5 });
+      core.emit("a2a", { action: "raise_alert", reason: "c", priority: 0.5 });
+
+      // Wait until all three arrived at the client.
+      while (clientReceived.length < 3) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+
+      // Invariant: for every id X, "append:done X" must appear before
+      // "client:received X" in the events log. Anything else means we
+      // broadcast before persisting — the durability gap.
+      for (const id of clientReceived) {
+        const appendDone = events.findIndex((e) => e.kind === "append:done" && e.id === id);
+        const clientRx    = events.findIndex((e) => e.kind === "client:received" && e.id === id);
+        assert(appendDone >= 0, `append:done for id=${id} missing from event log`);
+        assert(clientRx    >= 0, `client:received for id=${id} missing from event log`);
+        assert(
+          appendDone < clientRx,
+          `action id=${id} was broadcast BEFORE its log write resolved (appendDone=${appendDone}, clientRx=${clientRx})`
+        );
+      }
+
+      // And: every id the client saw is actually on disk.
+      await log.flush();
+      const persisted = await log.replay({ limit: 100 });
+      const persistedIds = new Set(
+        persisted.filter((r) => r.kind === "action").map((r) => r.id)
+      );
+      for (const id of clientReceived) {
+        assert(persistedIds.has(id), `action id=${id} was broadcast but NOT persisted`);
+      }
+
+      ws.close();
+    } finally {
+      await bridge.stop();
+      await log.destroy();
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  });
+
+  await test("P6: dropped action (append failure) is NOT broadcast", async () => {
+    const dir = tmpLogDir();
+    const log = new A2aLog({ dir });
+
+    // Sabotage append() so it always rejects.
+    const origAppend = log.append.bind(log);
+    log.append = async () => { throw new Error("disk full (test)"); };
+
+    const core = fakeCore();
+    const bridge = new A2aBridge({ core, a2aLog: log, port: 0, verbose: false });
+    await bridge.start();
+    const port = bridge._wss._server.address().port;
+
+    try {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      await waitForMessage(ws, (m) => m.type === "hello");
+
+      const clientReceived = [];
+      ws.on("message", (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === "action") clientReceived.push(m.id);
+      });
+
+      // Emit an action — persistence will fail, broadcast must NOT happen.
+      core.emit("a2a", { action: "raise_alert", reason: "x", priority: 0.5 });
+
+      // Wait long enough for the bridge to have processed it (or not).
+      await new Promise((r) => setTimeout(r, 200));
+
+      assertEq(clientReceived.length, 0, "client should not receive an action that failed to persist");
+      assertEq(bridge._stats.actionsDropped, 1, "actionsDropped should increment on append failure");
+      assertEq(bridge._stats.actionsBroadcast, 0, "actionsBroadcast must not increment when persistence failed");
+
+      // The id that was burnt by the failed append should be reclaimed so
+      // the next successful action gets the same number (id=1, not id=2).
+      // Sanity-check by emitting a successful action next.
+      log.append = origAppend; // restore
+      core.emit("a2a", { action: "raise_alert", reason: "y", priority: 0.5 });
+      const env = await waitForMessage(ws, (m) => m.type === "action");
+      assertEq(env.id, 1, "next successful action should reuse the reclaimed id=1");
+
+      ws.close();
+    } finally {
+      await bridge.stop();
+      await log.destroy();
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  });
+
+  await test("P6: stats.actionsDropped is exposed and starts at 0", async () => {
+    const { bridge, cleanup } = await makeBridge();
+    try {
+      const s = bridge.stats();
+      assertEq(s.actionsDropped, 0);
+      assert("actionsDropped" in s, "stats() must include actionsDropped");
+    } finally {
+      await cleanup();
+    }
+  });
+
 });

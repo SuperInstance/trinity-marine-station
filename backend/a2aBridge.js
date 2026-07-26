@@ -101,6 +101,7 @@ class A2aBridge {
     // Stats for observability.
     this._stats = {
       actionsBroadcast: 0,
+      actionsDropped: 0,    // log.append() failed; broadcast was skipped
       replaysServed: 0,
       acksRecorded: 0,
       clientsConnected: 0,
@@ -228,19 +229,28 @@ class A2aBridge {
   /**
    * Wire the bridge to core 'a2a' events. Each event becomes a broadcast
    * with a monotonically assigned ID.
+   *
+   * Note: the listener is async, but EventEmitter doesn't await listeners.
+   * We log any error but don't propagate it; the core doesn't (and shouldn't)
+   * know about bridge lifecycle. The async nature is needed so we can
+   * await log persistence BEFORE broadcasting (durability).
    */
   _wireCore() {
-    this._onCoreA2a = (action) => {
-      // Validate again at the bridge boundary in case the core somehow
-      // emitted a malformed payload. The cost is negligible (~µs).
-      const v = validateA2AAction(action);
-      if (!v.ok) {
-        if (this.verbose) {
-          console.error(`[a2aBridge] core 'a2a' payload failed validation: ${v.errors.join("; ")}`);
+    this._onCoreA2a = async (action) => {
+      try {
+        // Validate again at the bridge boundary in case the core somehow
+        // emitted a malformed payload. The cost is negligible (~µs).
+        const v = validateA2AAction(action);
+        if (!v.ok) {
+          if (this.verbose) {
+            console.error(`[a2aBridge] core 'a2a' payload failed validation: ${v.errors.join("; ")}`);
+          }
+          return;
         }
-        return;
+        await this._broadcastAction(v.value);
+      } catch (err) {
+        if (this.verbose) console.error(`[a2aBridge] _onCoreA2a error: ${err.message}`);
       }
-      this._broadcastAction(v.value);
     };
     this.core.on("a2a", this._onCoreA2a);
   }
@@ -428,31 +438,55 @@ class A2aBridge {
   }
 
   /**
-   * Assign the next ID, persist, and broadcast to all live clients.
+   * Assign the next ID, persist to the log, and then broadcast to all
+   * live clients.
+   *
+   * SYNC-THEN-BROADCAST (Phase 6 durability fix):
+   *   We AWAIT log.append() before broadcasting. This trades ~5ms of
+   *   per-action latency (a single fsync) for crash-recovery correctness:
+   *   if the bridge crashes mid-handler, clients either (a) received the
+   *   action AND it's on disk for replay, or (b) received nothing.
+   *   The old fire-and-forget order could leave clients holding an action
+   *   id that wasn't yet on disk — a restart would silently drop it from
+   *   replay, even though live clients had already applied it.
+   *
+   * If persistence fails (disk full, EIO, etc.), we DO NOT broadcast and
+   * increment `actionsDropped`. The action is gone from the universe —
+   * but we'd rather drop than lie to clients about replayability.
+   *
+   * Re-entrancy note: EventEmitter fires listeners synchronously and
+   * doesn't await them, so multiple concurrent core 'a2a' emissions will
+   * each be running this handler concurrently. We assign `id` and bump
+   * `_nextId` synchronously up front (so IDs stay monotonic across
+   * concurrent invocations), then await persistence per-action.
    */
-  _broadcastAction(action) {
+  async _broadcastAction(action) {
     const id = this._nextId++;
     const ts = new Date().toISOString();
     const envelope = { type: "action", id, action, ts };
 
-    // Kick off persistence (fire-and-forget). Note: this is NOT awaited,
-    // so the broadcast below still runs before the JSONL write completes.
-    // This means a crash between append() and the actual fsync could
-    // leave a client holding an action that's not yet on disk for replay.
-    // See docs/PHASE5.md §5.1 "Durability gap" — fixing this requires
-    // awaiting the append() before broadcasting, which trades ~5ms latency
-    // for crash-recovery correctness. Phase 6 candidate.
+    // Persist FIRST. If this fails, we don't broadcast.
     if (this.a2aLog) {
-      this.a2aLog.append({
-        kind: "action",
-        id,
-        action,
-        ts,
-      }).catch((err) => {
-        if (this.verbose) console.error(`[a2aBridge] a2aLog.append failed: ${err.message}`);
-      });
+      try {
+        await this.a2aLog.append({
+          kind: "action",
+          id,
+          action,
+          ts,
+        });
+      } catch (err) {
+        // Roll the ID back so the next action gets the same number.
+        // (Otherwise we'd burn IDs on failed appends, eventually overflowing.)
+        if (id === this._nextId - 1) this._nextId = id;
+        this._stats.actionsDropped++;
+        if (this.verbose) {
+          console.error(`[a2aBridge] a2aLog.append failed; dropping action id=${id}: ${err.message}`);
+        }
+        return;
+      }
     }
 
+    // Persisted (or no log configured). Now it's safe to broadcast.
     // Broadcast to all live clients. Skip any that are lagging.
     for (const c of this._clients) {
       if (c.ws.readyState !== c.ws.OPEN) {

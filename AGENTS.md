@@ -210,7 +210,7 @@ A2aBridge on('a2a') → A2aLog append → broadcast to all clients
 
 ## 7. The gotchas
 
-1. **The bridge still broadcasts before the log write resolves.** `a2aLog.append(...).catch(...)` is fire-and-forget by design (latency wins). If the bridge crashes between broadcast and disk sync, clients receive actions that aren't on disk for replay. The fix is a future work item (synchronous batch + barrier). Documented in `docs/PHASE5.md §6`.
+1. **The bridge persists to the log BEFORE broadcasting (sync-then-broadcast, Phase 6).** `_broadcastAction` is async; it `await`s `a2aLog.append()` then iterates live clients. If the bridge crashes mid-handler, clients either (a) received the action AND it's on disk for replay, or (b) received nothing. The old fire-and-forget order is gone — three new tests in `tests/a2aBridge.test.js` (prefixed `P6:`) pin this invariant down. If `append()` rejects, the action is dropped (no broadcast) and `actionsDropped` increments; the burnt id is reclaimed so the next action reuses it.
 
 2. **`opts.port ?? DEFAULT_PORT` not `||`.** A bug we hit: `port: 0` (let OS pick) was being silently rewritten to `3002`. Use nullish coalescing everywhere.
 
@@ -234,13 +234,16 @@ A2aBridge on('a2a') → A2aLog append → broadcast to all clients
 
 ## 8. The future plan (Phase 6 candidates)
 
-Ranked by value-per-line by the previous agent:
+**Phase 6 progress so far:**
+
+- [x] **Sync-then-broadcast bridge fix** (shipped 2026-07-26, commit forthcoming). `_broadcastAction` awaits `log.append()` before sending to clients; `actionsDropped` counter added; 3 new tests pin the invariant. See `docs/PHASE5.md §5.1` for the durability analysis and gotcha #1 above for the implementation summary.
+
+**Remaining candidates, ranked by value-per-line:**
 
 1. **Theia extension** (TypeScript, lives in `frontend/`). The `A2aClient` is ready to drop in. Need: a panel that reads `morph_to_hazard_mode` and visually switches the workspace; basic JSON-RPC plumbing. ~200 LOC.
-2. **Persistent bridge log: sync-then-broadcast.** Make the bridge wait for the log write to resolve before broadcasting. Trades ~5ms latency for crash-safety. ~30 LOC.
-3. **Real vessel-agent → WS bridge** (Python, ships in `vessel-agent`). ~80 LOC. Just publishes the trinity delta format at `ws://localhost:3000`.
-4. **DuckDB read-side adapter.** For retrospective queries against archived features. ~150 LOC.
-5. **`h3-js` integration** for production-grade H3 (current is a quantized-grid approximation). Drop-in replacement of `backend/h3.js`.
+2. **Real vessel-agent → WS bridge** (Python, ships in `vessel-agent`). ~80 LOC. Just publishes the trinity delta format at `ws://localhost:3000`.
+3. **DuckDB read-side adapter.** For retrospective queries against archived features. ~150 LOC.
+4. **`h3-js` integration** for production-grade H3 (current is a quantized-grid approximation). Drop-in replacement of `backend/h3.js`.
 
 If you are a future agent and need to pick one: **#1 (Theia extension)** closes the cognitive loop the most of these. The repo is currently "talks to itself" — the bridge fans out, but no UI listens. Theia is where the operator (captain) finally sees the system.
 
