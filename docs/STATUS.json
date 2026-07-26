@@ -808,6 +808,7 @@
     "wire_protocol_examples": "docs/a2a/EXAMPLES.jsonl",
     "wire_protocol_quickref": "docs/a2a/QUICKREF.md",
     "this_status_manifest": "docs/STATUS.json",
-    "mesh_test_report": "docs/MESH_TEST_REPORT.md"
+    "mesh_test_report": "docs/MESH_TEST_REPORT.md",
+    "live_path_sequence": "docs/LIVE_PATH.md"
   }
 }

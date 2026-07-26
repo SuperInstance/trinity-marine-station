@@ -2,6 +2,8 @@
 
 > Companion to `README.md`. This document explains **why** each module exists, the trade-offs considered, and the seams left open for Phase 2 (the JEPA cognitive engine).
 
+> **For the runtime data flow** (how Signal K frames become Theia UI updates across all five phases, including the A2A bridge), see [`docs/LIVE_PATH.md`](./LIVE_PATH.md).
+
 ---
 
 ## The big picture

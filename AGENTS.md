@@ -301,6 +301,7 @@ If you are a future agent and need to pick one: **#1 (Theia extension)** closes 
 - `docs/SYNERGY.md` — vessel-agent integration boundary (L0–L4 cognitive levels)
 - `docs/OPERATIONS.md` — env vars, run-time ops, shutdown order, troubleshooting
 - `docs/ARCHITECTURE.md` — design rationale (the *why*)
+- `docs/LIVE_PATH.md` — runtime sequence: Signal K → ingest → JEPA → narrator → core → a2aLog → bridge → Theia (the *how*, end-to-end)
 - `docs/TESTING.md` — how the test suite is structured
 - `docs/a2a/` (this round) — formal JSON Schema, examples, quickref for the A2A bridge
 - `docs/AGENTS.md` (this round) — longer-form agent-oriented onboarding
