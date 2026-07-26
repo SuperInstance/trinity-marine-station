@@ -152,6 +152,163 @@ constructor opt or read it after each `ack`). On restart, pass it back in.
 
 ---
 
+## 3.5 Worked example — a complete bridge session
+
+This is the canonical "one happy-path session" you can use as a template when
+writing tests, building a new client, or debugging protocol drift. Every line
+below is a literal `ws.send()` call (or its arrival on the other side), with
+the bridge's expected response.
+
+### 3.5.1 The participants
+
+```
+┌────────────────────┐                    ┌────────────────────┐
+│  a2aClient.js      │   ws://127.0.0.1   │  a2aBridge.js      │
+│  (Theia frontend)  │◄──────────────────►│  (inside daemon)   │
+│                    │       :3002        │                    │
+└────────────────────┘                    └────────────────────┘
+        │                                         │
+        │   persists lastAckedId locally          │   persists to
+        ▼                                         ▼   a2aLog/<date>.jsonl
+   disk/sqldb                                logs/a2a/
+```
+
+### 3.5.2 Cold start (first connect, no prior cursor)
+
+```
+T+0ms    CLIENT  ──ws.open──►                BRIDGE
+T+5ms    CLIENT  ◄──{ type:"hello", last_action_id: 0 }── BRIDGE
+         (client.on("hello") fires; c.hello.last_action_id === 0)
+
+T+2s     ── core emits A2AAction { kind:"morph_to_hazard_mode", payload:{...}, priority:0.98 }
+T+2s+ε   BRIDGE  assigns id=1, broadcasts
+         CLIENT  ◄──{ type:"action", id:1, action:{kind:"morph_to_hazard_mode", ...}, ts:"..." }
+         CLIENT  (c.on("action") handler runs; applyAction(...); c.ack(1))
+         CLIENT  ──►{ type:"ack", action_id:1 }
+         BRIDGE  ◄──{ type:"ack_ok", action_id:1 }── CLIENT   (confirms persisted)
+         BRIDGE  appends to a2aLog/2026-07-26.jsonl (asynchronously, ~100ms batch)
+
+T+60s    CLIENT  ──►{ type:"ping" }
+T+60s    CLIENT  ◄──{ type:"pong", ts:"2026-07-26T..." }── BRIDGE
+```
+
+What the client should persist after this session:
+- `lastAckedId = 1` (write to disk/sqldb before exit)
+- `bridgeStats = { helloLastActionId: 0, acksSent: 1, lastPongTs: "..." }`
+
+### 3.5.3 Restart and resume (the safety net that proves durability)
+
+```
+[T+10min]  Client process restarts. Loads lastAckedId=1 from disk.
+
+T+0ms     CLIENT  ──ws.open──►                BRIDGE
+T+5ms     CLIENT  ◄──{ type:"hello", last_action_id: 47 }── BRIDGE
+          (47 actions were emitted while client was down)
+          (c.on("hello") fires with c.hello.last_action_id === 47)
+
+T+10ms    CLIENT  ──►{ type:"replay", since_id: 1 }
+T+11ms    CLIENT  ◄──{ type:"action", id:2,  action:{...} }── BRIDGE
+T+11ms    CLIENT  ◄──{ type:"action", id:3,  action:{...} }── BRIDGE
+          ... (46 frames total, batched, ~5ms each)
+T+50ms    CLIENT  ◄──{ type:"action",  id:47, action:{...} }── BRIDGE
+T+50ms    CLIENT  ◄──{ type:"replay_end", replayed:46 }──── BRIDGE
+
+          For each: c.on("action") → applyAction → persistAckCursor → c.ack(id)
+          Final cursor: lastAckedId = 47
+```
+
+Why this proves the protocol works:
+- No action is delivered twice — ids are monotonic from the bridge
+- No action is lost — the bridge reads from durable `a2aLog`
+- The client doesn't need to know how long it was offline
+- The protocol is "replay-safe" by construction
+
+### 3.5.4 Server restart (bridge dies and comes back)
+
+```
+[T+30min]  Bridge process restarts (deploy / SIGTERM-and-restart).
+           A2aLog survives on disk (its state lives in logs/a2a/*.jsonl).
+
+           Graceful shutdown order (see OPERATIONS.md §6):
+             1. bridge.stop()         ← sends "server shutting down" close
+             2. a2aLog.destroy()      ← flushes pending batch
+           Reverse order would lose writes; this order does not.
+
+T+0ms     CLIENT  ws auto-reconnect (exponential backoff: 250ms → 500 → ... → 5s)
+T+2.3s    CLIENT  ──ws.open──►                BRIDGE (fresh process)
+T+2.3s    CLIENT  ◄──{ type:"hello", last_action_id: 47 }── BRIDGE
+          (BRIDGE's maxId() read a2aLog and got 47 — same as before)
+          Client's c.on("hello") handler sees last_action_id === lastAckedId,
+          so NO replay needed. Live feed resumes.
+```
+
+### 3.5.5 Client crash + late ack (the edge case that catches bugs)
+
+```
+[T+1h]  Client received action id=53 but crashed BEFORE sending c.ack(53).
+        On restart lastAckedId = 52.
+
+        Hello arrives with last_action_id = 53.
+        Client sends replay { since_id: 52 }.
+        Bridge replays ONLY id=53 (one frame).
+        Client applies it, sends ack { action_id: 53 }.
+        Cursor advances to 53.
+```
+
+This is the entire reason the protocol carries `action_id` separately from
+any client-side state: **at-least-once delivery with idempotent application**.
+
+### 3.5.6 What the on-disk JSONL looks like
+
+`logs/a2a/2026-07-26.jsonl` after the above session:
+
+```jsonl
+{"kind":"hello_meta","ts":"2026-07-26T12:00:00.000Z","clientCount":1}
+{"kind":"action","id":1,"action":{"kind":"morph_to_hazard_mode","payload":{"region":"north_atlantic"},"priority":0.98,"reason":"weather_front"},"ts":"2026-07-26T12:00:02.001Z"}
+{"kind":"ack","action_id":1,"from":"client-abc","ts":"2026-07-26T12:00:02.050Z"}
+{"kind":"action","id":2,"action":{...},"ts":"..."}
+...
+{"kind":"ack","action_id":47,"from":"client-abc","ts":"..."}
+{"kind":"replay","since_id":1,"replayed":46,"ts":"..."}
+```
+
+`A2aLog.since(0)` returns all records; `A2aLog.since(46)` returns only the
+last two. `A2aLog.maxId()` returns the highest `id` seen across all records.
+
+### 3.5.7 Failure modes (what NOT to assume)
+
+| Symptom | Likely cause | Where to look |
+|---|---|---|
+| `hello` never arrives | Bridge not started, or port blocked | `npm start` output; `BRIDGE_PORT` env; `OPERATIONS.md` §7 |
+| `replay` returns 0 actions | Bridge restarted with empty log (first run ever) | `logs/a2a/` directory; `A2aLog.maxId()` |
+| `error` envelope with code `MALFORMED_JSON` | Client sent non-JSON or wrong `type` | `parseA2AClientMessage()` validator |
+| Actions arrive out of order | Should not happen — monotonic ids | Check `_nextId` in `a2aBridge.js`; report a bug |
+| `pong` missing | Bridge heartbeat broken | `BRIDGE_HEARTBEAT_MS` env; `/status` shows `clientsDisconnected` incrementing |
+
+### 3.5.8 A one-page reference card
+
+For agents building a new client:
+
+```
+1.  open ws
+2.  wait hello         → c.hello.last_action_id = H
+3.  if persistedAck > 0 and persistedAck < H:
+        send { type:"replay", since_id: persistedAck }
+        apply all actions, ack each
+    else:
+        skip replay
+4.  on action:    apply; persistAck; ack(id)
+5.  on replay_end: nothing (just informational)
+6.  on pong:      update liveness timer
+7.  on error:     log + decide whether to reconnect
+8.  on close:     if intentional → exit; else → auto-reconnect (backoff)
+9.  on destroy:   cancel reconnect timers; close ws
+```
+
+That's the whole protocol. ~30 lines of client code, end-to-end durable.
+
+---
+
 ## 4. What Phase 5 does NOT do
 
 Out of scope, deferred to a later phase:
