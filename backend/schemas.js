@@ -67,6 +67,30 @@ function isPlainObject(x) {
   return x !== null && typeof x === "object" && !Array.isArray(x);
 }
 
+/**
+ * Loose equality for default-value comparison. We compare primitives by
+ * === and arrays by shallow element equality. Objects are compared by
+ * reference (not deep-equal) because default values are author-supplied
+ * literals — distinct object references cannot be equal even if they
+ * structurally match. This is intentional: callers that supply a fresh
+ * object literal identical to the default should still be type-checked.
+ */
+function looseEqual(a, b) {
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  }
+  // NaN === NaN is false but we treat them as equal — defaults are
+  // never NaN in practice, but defend against it.
+  if (typeof a === "number" && typeof b === "number" &&
+      Number.isNaN(a) && Number.isNaN(b)) return true;
+  return false;
+}
+
 // ===========================================================================
 // 1. FeatureVector — the 6-dim Float64Array packed by the ingest pipeline.
 // ----------------------------------------------------------------------------
@@ -188,6 +212,301 @@ const A2A_ALLOWED_ACTIONS = Object.freeze(new Set([
   "announce",
 ]));
 
+// ---------------------------------------------------------------------------
+// Per-action payload schemas.
+//
+// Why this exists:
+//   validateA2AAction() already enforces the allow-list and clamps priority,
+//   but it accepts ANY payload object shape. The frontend (Theia) and
+//   downstream consumers need to know the *exact* shape of each action's
+//   payload so they can render without guessing. The watchers in
+//   backend/watchers.js and the LLM narrator in backend/llmNarrator.js both
+//   emit these payloads today — but nothing checked the shape, so a watcher
+//   could pass `{kind: "shallow_water"}` while the frontend expected
+//   `{reason: "..."}` and the bug only surfaced at runtime.
+//
+//   These schemas are the single source of truth (mirroring the
+//   A2A_ALLOWED_ACTIONS single-source-of-truth pattern from commit
+//   7e8ddf2). docs/a2a/SCHEMA.json is regenerated from this map by
+//   tools/regenSchema.js — do not edit the JSON by hand.
+//
+// Each entry has:
+//   - fields: { name: { type, required, ... } }   where type ∈
+//       "string" | "number" | "integer" | "boolean" | "string[]" |
+//       "object" | "any"
+//   - defaults: { name: value }  — applied when caller omits the field
+//   - allowExtras: bool         — whether unknown fields are tolerated
+//
+// Design note (default semantics):
+//   The validator only enforces "non-empty" on STRING fields that the
+//   caller *explicitly supplied*. Fields filled from `spec.default` bypass
+//   the non-empty check, because the default is a known-good value the
+//   schema author chose — typically the empty string when "absent" is the
+//   correct semantic (e.g. `reason: ""` for a mode morph). This keeps the
+//   watcher integration honest: a watcher that emits `{reason: ""}` for
+//   a `morph_to_*` action is unambiguously saying "no reason supplied",
+//   not "the reason is the empty string".
+//
+// Validation rules:
+//   - Required fields must be present and of the right type.
+//   - Optional fields are filled with defaults if absent; if present, they
+//     are type-checked (and non-empty for string types).
+//   - Numbers must be finite. Integers must be Number.isInteger().
+//   - Strings must be non-empty *when supplied by the caller*; defaults
+//     that are "" are accepted.
+//   - If `allowExtras` is false (default), unknown fields fail validation.
+// ---------------------------------------------------------------------------
+
+const PAYLOAD_FIELD_TYPES = Object.freeze([
+  "string", "number", "integer", "boolean", "string[]", "object", "any",
+]);
+
+/**
+ * Validate a single field value against a declared type.
+ * @param {any} value
+ * @param {string} type
+ * @param {object} [opts]
+ * @param {boolean} [opts.allowEmptyString=false]  If true, accept "" for type="string".
+ *                                               Used when the field is
+ *                                               being filled with a default
+ *                                               that is itself an empty
+ *                                               string. Callers that
+ *                                               explicitly supply "" should
+ *                                               still be flagged.
+ * @returns {string|null} error message or null
+ */
+function checkFieldType(value, type, opts = {}) {
+  const allowEmptyString = opts.allowEmptyString === true;
+  switch (type) {
+    case "string":
+      if (typeof value !== "string") return "expected string";
+      if (value.length === 0 && !allowEmptyString) return "string must be non-empty";
+      return null;
+    case "number":
+      if (typeof value !== "number" || !Number.isFinite(value)) return "expected finite number";
+      return null;
+    case "integer":
+      if (typeof value !== "number" || !Number.isInteger(value)) return "expected integer";
+      return null;
+    case "boolean":
+      if (typeof value !== "boolean") return "expected boolean";
+      return null;
+    case "string[]":
+      if (!Array.isArray(value)) return "expected array of strings";
+      for (let i = 0; i < value.length; i++) {
+        if (typeof value[i] !== "string") return `array[${i}] must be string`;
+      }
+      return null;
+    case "object":
+      if (!isPlainObject(value)) return "expected plain object";
+      return null;
+    case "any":
+      return null;
+    default:
+      return `unknown type '${type}'`;
+  }
+}
+
+/**
+ * @typedef {object} PayloadFieldSpec
+ * @property {string} type    one of PAYLOAD_FIELD_TYPES
+ * @property {boolean} [required]  default false
+ * @property {any}    [default]   used when field is absent
+ */
+
+/**
+ * @typedef {object} ActionPayloadSchema
+ * @property {string} name        human-readable name (for errors)
+ * @property {Object<string, PayloadFieldSpec>} fields
+ * @property {Object<string, any>} [defaults]    field defaults
+ * @property {boolean} [allowExtras]  default false
+ */
+
+/** @type {Object<string, ActionPayloadSchema>} */
+const ACTION_PAYLOAD_SCHEMAS = Object.freeze({
+  morph_to_hazard_mode: {
+    name: "morph_to_hazard_mode",
+    fields: {
+      reason:   { type: "string", required: false, default: "" },
+      source:   { type: "string", required: false, default: "system" },
+    },
+    defaults:   { reason: "", source: "system" },
+    allowExtras: false,
+  },
+  morph_to_navigation_mode: {
+    name: "morph_to_navigation_mode",
+    fields: {
+      reason:   { type: "string", required: false, default: "" },
+      source:   { type: "string", required: false, default: "system" },
+      // Optional diagnostic hint (e.g. heading delta when the watcher
+      // detects off-course). NOT required but type-checked when present.
+      heading:  { type: "number", required: false, default: 0 },
+    },
+    defaults:   { reason: "", source: "system", heading: 0 },
+    allowExtras: false,
+  },
+  morph_to_engineering_mode: {
+    name: "morph_to_engineering_mode",
+    fields: {
+      reason:   { type: "string", required: false, default: "" },
+      source:   { type: "string", required: false, default: "system" },
+    },
+    defaults:   { reason: "", source: "system" },
+    allowExtras: false,
+  },
+  highlight_waypoint: {
+    name: "highlight_waypoint",
+    fields: {
+      waypoint:   { type: "string", required: false, default: "" },
+      durationMs: { type: "integer", required: false, default: 30000 },
+      // Optional diagnostic hint (heading delta when the watcher
+      // detected off-course). NOT required but type-checked when present.
+      heading:    { type: "number", required: false, default: 0 },
+    },
+    defaults:   { waypoint: "", durationMs: 30000, heading: 0 },
+    allowExtras: false,
+  },
+  raise_alert: {
+    name: "raise_alert",
+    fields: {
+      // Backward compat: severity was previously optional. Defaults to
+      // "warning" so legacy callers that omit payload still get a usable
+      // alert. Callers that DO supply a payload get type-checked.
+      severity:  { type: "string", required: false, default: "warning" },
+      message:   { type: "string", required: false, default: "" },
+      source:    { type: "string", required: false, default: "system" },
+      ttlMs:     { type: "integer", required: false, default: 0 },  // 0 = sticky
+      // Optional diagnostic hints supplied by the watcher and/or LLM.
+      // These are NOT required but are type-checked when present so
+      // upstream producers (backend/watchers.js) can't drift.
+      kind:      { type: "string", required: false, default: "" },
+      depth:     { type: "number", required: false, default: 0 },
+    },
+    defaults:   { severity: "warning", message: "", source: "system", ttlMs: 0, kind: "", depth: 0 },
+    allowExtras: false,
+  },
+  clear_alerts: {
+    name: "clear_alerts",
+    fields: {
+      // Empty payload is meaningful (clear all). Optional filter is a
+      // severity allow-list to selectively clear.
+      severities: { type: "string[]", required: false, default: [] },
+    },
+    defaults:   { severities: [] },
+    allowExtras: false,
+  },
+  set_panel_focus: {
+    name: "set_panel_focus",
+    fields: {
+      // Backward compat: panel is optional with a default of "main".
+      panel:     { type: "string", required: false, default: "main" },
+    },
+    defaults:   { panel: "main" },
+    allowExtras: false,
+  },
+  announce: {
+    name: "announce",
+    fields: {
+      // Backward compat: message is optional. An empty message is
+      // distinguishable from "no message" because callers must supply
+      // an object; the watcher and narrator both pass messages today.
+      message:   { type: "string", required: false, default: "" },
+      channel:   { type: "string", required: false, default: "bridge" },
+      ttlMs:     { type: "integer", required: false, default: 0 },
+    },
+    defaults:   { message: "", channel: "bridge", ttlMs: 0 },
+    allowExtras: false,
+  },
+});
+
+/**
+ * Look up the payload schema for an action. Returns null when the action
+ * has no schema defined (callers should then treat payload as opaque).
+ * @param {string} actionName
+ * @returns {ActionPayloadSchema|null}
+ */
+function getActionPayloadSchema(actionName) {
+  return ACTION_PAYLOAD_SCHEMAS[actionName] ?? null;
+}
+
+/**
+ * Validate a payload object against an action's payload schema.
+ * Returns { ok, value, errors } where value is the normalized payload
+ * (defaults applied, fields frozen) when ok is true.
+ *
+ * @param {string} actionName
+ * @param {any} payload
+ * @returns {{ ok: true, value: object } | { ok: false, errors: string[] }}
+ */
+function validateActionPayload(actionName, payload) {
+  const schema = ACTION_PAYLOAD_SCHEMAS[actionName];
+  if (!schema) {
+    // No schema declared: pass through. This keeps backward compatibility
+    // for actions added before their schema was registered.
+    if (!isPlainObject(payload)) {
+      return { ok: false, errors: [`payload for action '${actionName}' must be an object`] };
+    }
+    return { ok: true, value: Object.freeze({ ...payload }) };
+  }
+  if (!isPlainObject(payload)) {
+    return { ok: false, errors: [`payload for action '${actionName}' must be a plain object`] };
+  }
+  const out = {};
+  const errors = [];
+  const seen = new Set();
+
+  // Apply each declared field.
+  for (const [fieldName, spec] of Object.entries(schema.fields)) {
+    seen.add(fieldName);
+    const hasField = Object.prototype.hasOwnProperty.call(payload, fieldName);
+    let value;
+    let fromDefault = false;
+    if (hasField) {
+      value = payload[fieldName];
+      // Idempotency: if the caller supplied the exact default value, treat
+      // it as if the field was absent (we trust the schema). This makes
+      // validateActionPayload idempotent — feeding the validator's own
+      // output back through it is a no-op. It also lets the watcher emit
+      // empty-string defaults without triggering the non-empty check on
+      // re-validation.
+      if (Object.prototype.hasOwnProperty.call(spec, "default") &&
+          looseEqual(value, spec.default)) {
+        fromDefault = true;
+      } else {
+        const typeError = checkFieldType(value, spec.type);
+        if (typeError) {
+          errors.push(`payload.${fieldName}: ${typeError} (got ${JSON.stringify(value)})`);
+          continue;
+        }
+      }
+    } else if (spec.required) {
+      errors.push(`payload.${fieldName}: required field missing`);
+      continue;
+    } else {
+      // Field absent: fill with default. The default is known-good (we
+      // trust the schema), so no further check is needed.
+      value = spec.default;
+      fromDefault = true;
+    }
+    out[fieldName] = value;
+    // fromDefault is reserved for future use (e.g., warnings). Silence
+    // the unused-var warning by referencing it in a no-op.
+    void fromDefault;
+  }
+
+  // Reject unknown fields unless explicitly allowed.
+  if (!schema.allowExtras) {
+    for (const key of Object.keys(payload)) {
+      if (!seen.has(key)) {
+        errors.push(`payload.${key}: unknown field (not in action '${actionName}' schema)`);
+      }
+    }
+  }
+
+  if (errors.length) return { ok: false, errors };
+  return { ok: true, value: Object.freeze(out) };
+}
+
 /**
  * Validate and normalize an A2A action.
  * @param {any} input
@@ -203,8 +522,15 @@ function validateA2AAction(input) {
   if (!A2A_ALLOWED_ACTIONS.has(input.action)) {
     return { ok: false, errors: [`a2a.action '${input.action}' is not in the allow-list`] };
   }
-  // payload is optional; default to empty object
-  const payload = isPlainObject(input.payload) ? input.payload : {};
+  // payload is optional; default to empty object, then run through the
+  // per-action payload schema (see ACTION_PAYLOAD_SCHEMAS). Backward
+  // compatibility: when no schema is defined for the action, any plain
+  // object is accepted as-is.
+  const rawPayload = isPlainObject(input.payload) ? input.payload : {};
+  const payloadResult = validateActionPayload(input.action, rawPayload);
+  if (!payloadResult.ok) {
+    return { ok: false, errors: payloadResult.errors };
+  }
   // reason is optional; default to empty string
   const reason  = isString(input.reason) ? input.reason : "";
   // priority is optional; default to 0.5, clamped to [0, 1]
@@ -216,7 +542,7 @@ function validateA2AAction(input) {
     ok: true,
     value: Object.freeze({
       action: input.action,
-      payload: Object.freeze({ ...payload }),
+      payload: payloadResult.value,
       reason,
       priority,
     }),
@@ -454,6 +780,11 @@ module.exports = {
   isPlausibleSignalKDelta,
   normalizeEnergyReading,
   A2A_ALLOWED_ACTIONS,
+  ACTION_PAYLOAD_SCHEMAS,
+  PAYLOAD_FIELD_TYPES,
+  getActionPayloadSchema,
+  validateActionPayload,
+  checkFieldType,
   validateA2AAction,
   parseAndValidateA2A,
   parseA2AClientMessage,

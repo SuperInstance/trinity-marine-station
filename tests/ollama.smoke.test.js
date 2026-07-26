@@ -187,7 +187,7 @@ async function main() {
     "Calm seas, " +
     "course 045, " +
     "depth 18 m. " +
-    "<a2a>{\"action\":\"highlight_waypoint\",\"payload\":{\"id\":\"Alcatraz\"},\"priority\":0.6,\"reason\":\"passing landmark\"}</a2a>" +
+    "<a2a>{\"action\":\"highlight_waypoint\",\"payload\":{\"waypoint\":\"Alcatraz\"},\"priority\":0.6,\"reason\":\"passing landmark\"}</a2a>" +
     " Continuing transit.";
 
   let prose = "";
@@ -198,7 +198,7 @@ async function main() {
   const parsed = parseAndValidateA2A(a2aBlocks[0]);
   assert.ok(parsed, "parser rejected valid fixture");
   assert.equal(parsed.action, "highlight_waypoint");
-  assert.equal(parsed.payload.id, "Alcatraz");
+  assert.equal(parsed.payload.waypoint, "Alcatraz");
   assert.ok(!prose.includes("<a2a>"), "prose leaked a2a tags");
   assert.ok(prose.includes("Calm seas"), "prose missing opener");
   assert.ok(prose.includes("Continuing transit."), "prose missing closer");

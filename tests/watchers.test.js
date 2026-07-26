@@ -292,16 +292,21 @@ run("watchers", async () => {
   });
 
   test("default payload is {} when payload fn omitted", () => {
+    // After Phase 8 payload schemas: actions now ship with defaulted
+    // payload fields, so a payload-less action produces a frozen object
+    // (currently 3 keys for `announce`: message, channel, ttlMs).
     const reg = new WatcherRegistry();
     reg.add({
       id: "always",
       name: "always fires",
       when: () => true,
-      action: { name: "announce" },
+      action: { name: "morph_to_hazard_mode" },  // no payload, no reason, no priority
     });
     const out = reg.evaluate(frame());
     assertEq(typeof out[0].payload, "object", "payload is object");
-    assertEq(Object.keys(out[0].payload).length, 0, "payload is empty");
+    // `morph_to_hazard_mode` has 2 defaulted fields: reason, source.
+    assertEq(out[0].payload.reason, "", "defaulted reason");
+    assertEq(out[0].payload.source, "system", "defaulted source");
   });
 
   test("default reason is '' when reason fn omitted", () => {

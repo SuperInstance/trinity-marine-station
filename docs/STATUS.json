@@ -3,7 +3,7 @@
   "$id": "https://github.com/SuperInstance/trinity-marine-station/blob/main/docs/STATUS.json",
   "title": "Trinity Marine Station - Project Status Manifest",
   "description": "Agentic-first marine navigation station. Real-time ingestion of vessel telemetry, JEPA-style anomaly detection, local LLM narration, and a WebSocket A2A bridge to a future Eclipse Theia workspace.",
-  "generated_at": "2026-07-26T23:00:25.373Z",
+  "generated_at": "2026-07-26T23:47:58.631Z",
   "_comment": "Update 'generated_at' whenever this file is edited. Update 'commit' to the latest shipped commit hash (HEAD on main, when working tree is clean).",
   "name": "trinity-marine-station",
   "display_name": "Trinity Marine Station",
@@ -15,7 +15,7 @@
     "role": "L0/L1 data capture (NMEA, acoustic, catch); upstream of Trinity's L2 cognitive layer"
   },
   "license": "private (no license declared yet)",
-  "commit": "6fd1faf566a38a885dcd2ec8d29094bab870a29a",
+  "commit": "223daa199b844b05a0c4b6703281a2c5ba3566f2",
   "branch": "main",
   "node_version_required": ">=18.0.0",
   "language": "JavaScript (Node.js, plain JS with JSDoc; no build step)",
@@ -288,7 +288,7 @@
       "purpose": "Production daemon. Wires ingest to JEPA to narrator to a2aLog to a2aBridge. Serves /health (liveness) and /status (snapshot). Reads all env vars."
     },
     "backend/schemas.js": {
-      "lines": 464,
+      "lines": 795,
       "phase": 1,
       "exports": [
         "validateTrinityFrame",
@@ -655,7 +655,7 @@
         "file": "tests/watchers.test.js",
         "assertions": 47,
         "covers": "deterministic A2A rule engine (registration, evaluation, error isolation)",
-        "lines": 586
+        "lines": 591
       },
       {
         "file": "tests/trinityCoreWatchers.test.js",
@@ -697,7 +697,7 @@
         "file": "tests/schemas.test.js",
         "assertions": 36,
         "covers": "all validators",
-        "lines": 244
+        "lines": 369
       },
       {
         "file": "tests/openai.smoke.test.js",

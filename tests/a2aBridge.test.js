@@ -181,7 +181,7 @@ run("a2aBridge", async () => {
 
       const action = {
         action: "morph_to_hazard_mode",
-        payload: { hint: "shallow water" },
+        payload: { reason: "shallow water" },
         reason: "depth plunge",
         priority: 0.95,
       };
