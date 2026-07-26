@@ -40,6 +40,10 @@ const fsStat       = promisify(fs.stat);
 const fsReadFile   = promisify(fs.readFile);
 const fsReaddir    = promisify(fs.readdir);
 
+function isPlainObject(x) {
+  return x !== null && typeof x === "object" && !Array.isArray(x);
+}
+
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
@@ -85,31 +89,91 @@ class A2aLog {
   // -------------------------------------------------------------------------
 
   /**
-   * Append an A2A action. The action is augmented with a server-side
-   * timestamp + sequence number and persisted as one JSONL line.
+   * Append a record to the log. The record can be:
+   *   - A validated A2A action (legacy shape — `{ action, payload, ... }`)
+   *   - A bridge record with explicit `id` and `kind` (used by A2aBridge
+   *     to maintain monotonic IDs for replay)
    *
    * Returns a Promise that resolves once the write is durable on disk.
    *
-   * @param {object} action   Validated A2A action (see schemas.validateA2AAction)
+   * @param {object} record   Record to persist. Augmented with `_loggedAt` + `_seq`.
    * @returns {Promise<object>} The persisted record (with `_loggedAt`, `_seq`)
    */
-  async append(action) {
+  async append(record) {
     if (this._destroyed) throw new Error("A2aLog: append after destroy()");
+    if (!isPlainObject(record)) {
+      throw new Error("A2aLog.append: record must be a plain object");
+    }
 
     // Compose the on-disk record. Internal metadata is namespaced `_` to keep
     // it out of the A2A schema namespace.
     const seq = this._nextSeq();
-    const record = {
-      ...action,
+    const out = {
+      ...record,
       _loggedAt: this._now().toISOString(),
       _seq:      seq,
     };
-    const line = JSON.stringify(record) + "\n";
+    const line = JSON.stringify(out) + "\n";
 
     return new Promise((resolve, reject) => {
-      this._pendingWrites.push({ line, record, resolve, reject });
+      this._pendingWrites.push({ line, record: out, resolve, reject });
       this._scheduleFlush();
     });
+  }
+
+  /**
+   * Return all records with `id > sinceId`, oldest-first.
+   *
+   * Used by the A2aBridge to replay missed actions to a reconnecting
+   * client. Skips records that don't have an `id` field (e.g., ack records
+   * written by the bridge) — those aren't replayable actions.
+   *
+   * @param {number} sinceId
+   * @returns {Promise<object[]>}
+   */
+  async since(sinceId) {
+    const files = await this._listLogFiles();
+    const collected = [];
+
+    // Read in chronological order so we can stream oldest-first.
+    for (const f of files) {
+      const content = await fsReadFile(path.join(this._dir, f), "utf8");
+      const lines = content.split("\n").filter(Boolean);
+      for (const line of lines) {
+        let rec;
+        try { rec = JSON.parse(line); }
+        catch { continue; }
+        // Skip records without an id (acks, metadata) — they aren't actions.
+        if (!Number.isInteger(rec.id)) continue;
+        if (rec.id <= sinceId) continue;
+        collected.push(rec);
+      }
+    }
+    return collected;
+  }
+
+  /**
+   * Return the highest action id recorded in the log, or 0 if none.
+   * Used by the bridge on startup to resume monotonic IDs.
+   *
+   * @returns {Promise<number>}
+   */
+  async maxId() {
+    const files = await this._listLogFiles();
+    let max = 0;
+    for (const f of files) {
+      const content = await fsReadFile(path.join(this._dir, f), "utf8");
+      const lines = content.split("\n").filter(Boolean);
+      for (let j = lines.length - 1; j >= 0; j--) {
+        let rec;
+        try { rec = JSON.parse(lines[j]); }
+        catch { continue; }
+        if (Number.isInteger(rec.id) && rec.id > max) {
+          max = rec.id;
+        }
+      }
+    }
+    return max;
   }
 
   /**

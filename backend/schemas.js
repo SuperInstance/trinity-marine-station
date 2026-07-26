@@ -244,6 +244,68 @@ function parseAndValidateA2A(raw) {
   return validateA2AAction(parsed);
 }
 
+/**
+ * Client-to-bridge message validator.
+ *
+ * The bridge accepts a small, strict set of request types from subscribed
+ * frontend clients (Eclipse Theia panels, web dashboards, etc.). Anything
+ * else is rejected with `{ ok: false, errors: [...] }` so the client knows
+ * to retry / fix its code instead of silently dropping.
+ *
+ * Supported message types:
+ *   - { type: "ping" }              health check
+ *   - { type: "ack", action_id: N } mark action N as received
+ *   - { type: "replay", since_id: N } re-send all actions with id > N
+ *
+ * Returns the normalised { type, ... } payload on success. Each message
+ * type is validated independently so the caller can dispatch safely.
+ */
+function parseA2AClientMessage(raw) {
+  if (typeof raw !== "string" && !(raw instanceof Buffer)) {
+    return { ok: false, errors: ["client message is not a string or Buffer"] };
+  }
+  const text = String(raw).trim();
+  if (text.length === 0) {
+    return { ok: false, errors: ["client message is empty"] };
+  }
+  let parsed;
+  try { parsed = JSON.parse(text); }
+  catch (e) {
+    return { ok: false, errors: [`client message JSON parse failed: ${e.message}`] };
+  }
+  if (!isPlainObject(parsed)) {
+    return { ok: false, errors: ["client message is not an object"] };
+  }
+  if (!isString(parsed.type) || parsed.type.length === 0) {
+    return { ok: false, errors: ["client message missing 'type' field"] };
+  }
+
+  switch (parsed.type) {
+    case "ping":
+      return { ok: true, value: { type: "ping" } };
+
+    case "ack": {
+      // action_id is required and must be a non-negative integer
+      if (!Number.isInteger(parsed.action_id) || parsed.action_id < 0) {
+        return { ok: false, errors: ["ack.action_id must be a non-negative integer"] };
+      }
+      return { ok: true, value: { type: "ack", action_id: parsed.action_id } };
+    }
+
+    case "replay": {
+      // since_id is optional; if present, must be a non-negative integer
+      const sinceId = parsed.since_id === undefined ? 0 : parsed.since_id;
+      if (!Number.isInteger(sinceId) || sinceId < 0) {
+        return { ok: false, errors: ["replay.since_id must be a non-negative integer"] };
+      }
+      return { ok: true, value: { type: "replay", since_id: sinceId } };
+    }
+
+    default:
+      return { ok: false, errors: [`unknown client message type '${parsed.type}'`] };
+  }
+}
+
 // ===========================================================================
 // 5. LlmChunk — output of every LlmBackend.generate() iteration.
 // ----------------------------------------------------------------------------
@@ -394,6 +456,7 @@ module.exports = {
   A2A_ALLOWED_ACTIONS,
   validateA2AAction,
   parseAndValidateA2A,
+  parseA2AClientMessage,
   makeLlmChunk,
   validateTrinityFrame,
   isPlausibleVesselAnchor,

@@ -21,3 +21,6 @@ build/
 
 # Runtime artifacts (the A2A audit log writes here by default)
 logs/
+
+# Local scratch / debug scripts (kept on disk, never committed)
+_debug_*.js
