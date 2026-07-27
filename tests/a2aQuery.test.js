@@ -806,4 +806,145 @@ run("a2aQuery", async () => {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
     }
   });
+
+  // -------------------------------------------------------------------------
+  // timeRange(filters) (Phase 7+)
+  //
+  // Returns { earliest, latest, spanMs, matched } for the filtered set.
+  //   - earliest / latest are ISO strings (or null)
+  //   - spanMs is latest - earliest in ms (or null if fewer than 2 valid ts)
+  //   - matched counts records that passed the filter (even those with
+  //     invalid ts that get excluded from earliest/latest)
+  // -------------------------------------------------------------------------
+
+  await test("timeRange: empty log returns null/null/0", async () => {
+    const dir = tmpDir();
+    try {
+      const q = new A2aQuery({ dir });
+      const tr = await q.timeRange();
+      assertEq(tr.earliest, null);
+      assertEq(tr.latest, null);
+      assertEq(tr.spanMs, null);
+      assertEq(tr.matched, 0);
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  });
+
+  await test("timeRange: returns earliest/latest across all records", async () => {
+    const dir = tmpDir();
+    try {
+      const baseMs = Date.parse("2026-07-25T12:00:00Z");
+      const records = [
+        { kind: "action", action: "raise_alert", priority: 0.5,
+          ts: new Date(baseMs).toISOString() },
+        { kind: "action", action: "announce", priority: 0.3,
+          ts: new Date(baseMs + 60_000).toISOString() },
+        { kind: "action", action: "clear_alerts", priority: 0.1,
+          ts: new Date(baseMs + 600_000).toISOString() }, // 10 min later
+      ];
+      writeLog(dir, records, { mtimeMs: baseMs });
+      const q = new A2aQuery({ dir });
+      const tr = await q.timeRange();
+      assertEq(tr.earliest, new Date(baseMs).toISOString());
+      assertEq(tr.latest,   new Date(baseMs + 600_000).toISOString());
+      assertEq(tr.spanMs,   600_000);
+      assertEq(tr.matched,  3);
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  });
+
+  await test("timeRange: spanMs is 0 when only one record has a valid ts", async () => {
+    const dir = tmpDir();
+    try {
+      const baseMs = Date.parse("2026-07-25T12:00:00Z");
+      // Two records: one with valid ts, one with garbage ts.
+      const records = [
+        { kind: "action", action: "raise_alert", priority: 0.5,
+          ts: new Date(baseMs).toISOString() },
+        { kind: "action", action: "announce", priority: 0.3,
+          ts: "not-a-real-date" },
+      ];
+      writeLog(dir, records, { mtimeMs: baseMs });
+      const q = new A2aQuery({ dir });
+      const tr = await q.timeRange();
+      assertEq(tr.earliest, new Date(baseMs).toISOString());
+      assertEq(tr.latest,   new Date(baseMs).toISOString());
+      // Only one valid timestamp; the only sensible span is 0
+      // (both earliest and latest resolve to that single moment).
+      assertEq(tr.spanMs,   0);
+      // Both records passed the filter; only one contributed to the range.
+      assertEq(tr.matched,  2);
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  });
+
+  await test("timeRange: respects filters (action, source, since/until)", async () => {
+    const dir = tmpDir();
+    try {
+      const baseMs = Date.parse("2026-07-25T12:00:00Z");
+      const records = [
+        // raise_alert window
+        { kind: "action", action: "raise_alert", priority: 0.9,
+          source: "watcher", ts: new Date(baseMs).toISOString() },
+        { kind: "action", action: "raise_alert", priority: 0.5,
+          source: "watcher", ts: new Date(baseMs + 30_000).toISOString() },
+        // narrator action outside our filter
+        { kind: "action", action: "raise_alert", priority: 0.5,
+          source: "narrator", ts: new Date(baseMs + 60_000).toISOString() },
+        // different action
+        { kind: "action", action: "announce", priority: 0.3,
+          source: "watcher", ts: new Date(baseMs + 90_000).toISOString() },
+      ];
+      writeLog(dir, records, { mtimeMs: baseMs });
+      const q = new A2aQuery({ dir });
+
+      // Watcher raise_alerts only
+      const tr = await q.timeRange({ action: "raise_alert", source: "watcher" });
+      assertEq(tr.earliest, new Date(baseMs).toISOString());
+      assertEq(tr.latest,   new Date(baseMs + 30_000).toISOString());
+      assertEq(tr.spanMs,   30_000);
+      assertEq(tr.matched,  2);
+
+      // since filter
+      const tr2 = await q.timeRange({
+        since: new Date(baseMs + 15_000).toISOString(),
+      });
+      // After baseMs+15s: base+30, base+60, base+90 -> 3 records
+      assertEq(tr2.matched, 3);
+      assertEq(tr2.earliest, new Date(baseMs + 30_000).toISOString());
+      assertEq(tr2.latest,   new Date(baseMs + 90_000).toISOString());
+
+      // No matches
+      const tr3 = await q.timeRange({ action: "morph_to_engineering_mode" });
+      assertEq(tr3.earliest, null);
+      assertEq(tr3.latest, null);
+      assertEq(tr3.spanMs, null);
+      assertEq(tr3.matched, 0);
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  });
+
+  await test("timeRange: spanMs is 0 when all records share the same ts", async () => {
+    const dir = tmpDir();
+    try {
+      const baseMs = Date.parse("2026-07-25T12:00:00Z");
+      const iso = new Date(baseMs).toISOString();
+      const records = [
+        { kind: "action", action: "raise_alert", priority: 0.5, ts: iso },
+        { kind: "action", action: "announce", priority: 0.3, ts: iso },
+        { kind: "ack", action_id: 1, ts: iso },
+      ];
+      writeLog(dir, records, { mtimeMs: baseMs });
+      const q = new A2aQuery({ dir });
+      const tr = await q.timeRange();
+      assertEq(tr.spanMs, 0);
+      assertEq(tr.matched, 3);
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  });
 });

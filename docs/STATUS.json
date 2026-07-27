@@ -3,7 +3,7 @@
   "$id": "https://github.com/SuperInstance/trinity-marine-station/blob/main/docs/STATUS.json",
   "title": "Trinity Marine Station - Project Status Manifest",
   "description": "Agentic-first marine navigation station. Real-time ingestion of vessel telemetry, JEPA-style anomaly detection, local LLM narration, and a WebSocket A2A bridge to a future Eclipse Theia workspace.",
-  "generated_at": "2026-07-27T01:15:59.420Z",
+  "generated_at": "2026-07-27T01:42:53.941Z",
   "_comment": "Update 'generated_at' whenever this file is edited. Update 'commit' to the latest shipped commit hash (HEAD on main, when working tree is clean).",
   "name": "trinity-marine-station",
   "display_name": "Trinity Marine Station",
@@ -15,7 +15,7 @@
     "role": "L0/L1 data capture (NMEA, acoustic, catch); upstream of Trinity's L2 cognitive layer"
   },
   "license": "private (no license declared yet)",
-  "commit": "66539a6919450422ae39686ec5424b364579f920",
+  "commit": "e8fe38dffe7f1cb9ed22281335aff277ce537a27",
   "branch": "main",
   "node_version_required": ">=18.0.0",
   "language": "JavaScript (Node.js, plain JS with JSDoc; no build step)",
@@ -215,7 +215,7 @@
       "purpose": "Append-only JSONL audit log. Batched writes, rotation, replay, persistence, ack checkpointing."
     },
     "backend/a2aQuery.js": {
-      "lines": 405,
+      "lines": 450,
       "phase": "7+",
       "exports": [
         "A2aQuery",
@@ -664,7 +664,7 @@
         "file": "tests/a2aQuery.test.js",
         "assertions": 38,
         "covers": "read-side query layer (filters, countBy, topBy, bucketBy, summary)",
-        "lines": 809
+        "lines": 950
       },
       {
         "file": "tests/watchers.test.js",

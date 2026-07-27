@@ -149,7 +149,9 @@ Ranked by value-per-line:
    in `tests/watcherHistory.test.js` + 16 integration tests in
    `tests/watchersWithHistory.test.js`. The history is a pure in-memory
    object — no IO, no persistence, safe for the 500ms tick loop.
-2. **`predict(counterfactual)` on JEPA world model** ("Divination" from AELMA). ~200 LOC. Research-flavored — see `docs/AELMA_SYNTHESIS.md` for the prior discussion.
+2. ✅ **`a2aQuery.timeRange(filters)`** — SHIPPED in commit `a2aQuery` module update. Returns `{ earliest, latest, spanMs, matched }` for any filter set. Designed for dashboards: "when did the last incident start?", "how long has the vessel been in anomaly mode?", "has there been a raise_alert in the last 10 minutes?". Streams the log once via the existing `_iterate` filter — memory stays bounded regardless of corpus size. 6 new tests in `tests/a2aQuery.test.js` cover empty log, single & multi-record spans, filter composition, and `spanMs=0` semantics when all records share one timestamp.
+3. ✅ **Source provenance filter on a2aQuery** — SHIPPED in commit `e8fe38d`. `source` filter (exact match) plus convenience methods `bySource(source, opts)` and `sourceBreakdown(filters)`. Surfaces "what fraction of morning alerts came from watchers vs the LLM?" directly. 9 new tests.
+4. **`predict(counterfactual)` on JEPA world model** ("Divination" from AELMA). ~200 LOC. Research-flavored — see `docs/AELMA_SYNTHESIS.md` for the prior discussion.
 
 ## 9. Cross-references
 

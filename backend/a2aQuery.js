@@ -322,6 +322,51 @@ class A2aQuery {
   }
 
   /**
+   * Find the time span of records matching a filter set.
+   *
+   * Useful for dashboards ("when did the last incident start?", "how
+   * long has the vessel been in anomaly mode?"). Iterates the log
+   * once, yielding records one at a time, so memory stays bounded
+   * regardless of corpus size.
+   *
+   * Records whose `ts` cannot be parsed as ISO are silently skipped.
+   *
+   * @param {object}  [filters]   Standard filter set.
+   * @returns {Promise<{
+   *   earliest: string|null,
+   *   latest:   string|null,
+   *   spanMs:   number|null,
+   *   matched:  number,
+   * }>}
+   *   `spanMs` is `latest - earliest` in ms, or null if fewer than 2
+   *   records had a parseable timestamp. `matched` is the count of
+   *   records that passed the filter (NOT the count of records that
+   *   had a valid ts; records with invalid ts still increment
+   *   `matched` but are excluded from earliest/latest).
+   */
+  async timeRange(filters = {}) {
+    let earliestMs = Infinity;
+    let latestMs   = -Infinity;
+    let matched    = 0;
+
+    for await (const rec of this._iterate(filters)) {
+      matched++;
+      const recMs = parseIsoMs(rec.ts);
+      if (recMs === null) continue;
+      if (recMs < earliestMs) earliestMs = recMs;
+      if (recMs > latestMs)   latestMs   = recMs;
+    }
+
+    const earliest = earliestMs === Infinity ? null : new Date(earliestMs).toISOString();
+    const latest   = latestMs   === -Infinity ? null : new Date(latestMs).toISOString();
+    let spanMs = null;
+    if (earliestMs !== Infinity && latestMs !== -Infinity && latestMs >= earliestMs) {
+      spanMs = latestMs - earliestMs;
+    }
+    return { earliest, latest, spanMs, matched };
+  }
+
+  /**
    * Bucket records by time interval. Each bucket holds the count of records
    * whose `rec.ts` falls within [bucketStart, bucketStart+intervalMs).
    *

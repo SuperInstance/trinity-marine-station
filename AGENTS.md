@@ -73,7 +73,7 @@ Approximate total tests: ~3,950 lines across 18 files.
 | `backend/llmNarrator.js`   | 523 | Conscious narrator: stream splitter, prose vs `<a2a>` blocks, throttled/emergency modes. |
 | `backend/a2aBridge.js`     | 446 | WebSocket server (port 3002). Hello, replay, ack, ping/pong, graceful shutdown. Sync-then-broadcast durability (Phase 6). |
 | `backend/a2aClient.js`     | 457 | Typed WS client. Auto-reconnect, manual replay, destroy. |
-| `backend/a2aQuery.js`      | 405 | Read-side query layer over the JSONL action log. Pure JS, no native deps. Filters, countBy/topBy, time-bucket, summary, source provenance (`bySource`, `sourceBreakdown`). |
+| `backend/a2aQuery.js`      | 450 | Read-side query layer over the JSONL action log. Pure JS, no native deps. Filters, countBy/topBy, time-bucket, summary, source provenance (`bySource`, `sourceBreakdown`), `timeRange`. |
 
 | `backend/watchers.js`      | 440 | Deterministic A2A rule engine (Phase 7). Pure-function predicates over `FeatureVector`; fires A2A actions through trinityCore's `a2a` event so the LLM is informed rather than bypassed. Optional `WatcherHistory` integration for cooldown + payload dedup. Inspired by AELMA 'Watcher NPCs' pattern (docs/AELMA_SYNTHESIS.md). |
 | `backend/watcherHistory.js` | 293 | Per-rule suppression layer. shouldFire(rid, now) checks both cooldown (ms) and canonical payload-key dedup; record() / markSuppressed() update per-rule stats. Pure in-memory state, no IO, safe for the 500ms tick loop. Stats exposed via getStats(). |
@@ -88,7 +88,7 @@ Approximate total tests: ~3,950 lines across 18 files.
 | `backend/a2aBridge.test.js` | 429 | 18 cases. |
 | `backend/a2aClient.test.js` | 465 | 16 cases. |
 | `backend/a2aLog.test.js`    | 361 | 18 cases. |
-| `tests/a2aQuery.test.js`    | 808 | 47 cases (helpers + integration + source-filter). |
+| `tests/a2aQuery.test.js`    | 948 | 53 cases (helpers + integration + source-filter + timeRange). |
 
 | `tests/watchers.test.js`    | 470 | 47 cases. Pure-registry behavior: registration, evaluation, error isolation, validation. |
 
@@ -233,7 +233,11 @@ const buckets = await q.bucketBy({
 
 // Roll-up
 const s = await q.summary();
-// => { totalRecords, byKind, byAction, timeRange }
+// => { totalRecords, byKind, byAction, timeRange: { earliest, latest, spanMs } }
+
+// Time span of a filtered set (dashboards, alerts)
+const span = await q.timeRange({ action: "raise_alert" });
+// => { earliest: "2026-07-25T12:00:00Z", latest: "2026-07-25T18:42:00Z", spanMs: 23920000, matched: 7 }
 ```
 
 Filters: `kind`, `action`, `since`, `until`, `minPriority`, `maxPriority`,
@@ -277,7 +281,7 @@ time, so memory stays bounded by line length, not file size.
 | A new health probe | `backend/healthCheck.js` (implement `probe()`) |
 | A new env var | `backend/trinityDaemon.js` (read), `docs/OPERATIONS.md` (document) |
 | A new test suite | Drop `*.test.js` in `tests/` — auto-discovered |
-| A new query filter / aggregation | `backend/a2aQuery.js` (`recordMatches`, `query`, `countBy`, `topBy`, `bucketBy`, `summary`, `bySource`, `sourceBreakdown`) |
+| A new query filter / aggregation | `backend/a2aQuery.js` (`recordMatches`, `query`, `countBy`, `topBy`, `bucketBy`, `summary`, `bySource`, `sourceBreakdown`, `timeRange`) |
 | A new deterministic A2A rule | `backend/watchers.js` (add to a `WatcherRegistry`); the daemon installs `buildDefaultWatchers()` so rules fire before the LLM. Watcher-fired actions are stamped with `source: "watcher"`. |
 | A new suppression policy for watchers | `backend/watcherHistory.js` (cooldown + payload dedup). Pass `{ history }` to the registry constructor to enable. Defaults: cooldownMs=0 (off), dedupPayloads=true. |
 
@@ -321,7 +325,7 @@ time, so memory stays bounded by line length, not file size.
 - [x] **Deterministic Watcher Rules** (AELMA-inspired, shipped 2026-07-26, commit `c1e10a4`). `backend/watchers.js` provides a `WatcherRegistry` where each rule has a `when(frame)` predicate + an `action` template. The daemon installs 3 defaults (`shallow-water`, `heading-off-course`, `speed-anomaly`) in `buildDefaultWatchers()`. Watchers fire BEFORE the LLM is consulted, but the resulting A2A actions are routed through `trinityCore`'s existing `'a2a'` event so they share persistence + broadcast + LLM-notification. The LLM is informed, not bypassed. 47 pure-registry tests + 11 integration tests pin the design. Toggle with `WATCHERS_DISABLED=1`.
 - [x] **A2A action parameter schemas** (shipped 2026-07-26, commit `390fb2c`). `ACTION_PAYLOAD_SCHEMAS` in `backend/schemas.js` is the single source of truth for per-action payload shape. `tools/regenSchema.js` regenerates `docs/a2a/SCHEMA.json` from it. 12 new schema tests + ollama smoke fix.
 - [x] **Watcher history (cooldown + payload dedup)** (shipped 2026-07-27, commit `5d4f590`). `backend/watcherHistory.js` is a per-rule suppression layer that prevents alert flooding when a steady-state condition keeps a watcher predicate true on every tick. The `WatcherRegistry` now consults history inside `evaluate()`; suppressed fires emit no `'fired'` event but DO increment suppress counters (visible in `/status`). 33 unit + 16 integration tests cover cooldown math, payload-key dedup, per-rule isolation, error isolation, and `reg.stats` exposure.
-- [x] **Source provenance filter on a2aQuery** (shipped 2026-07-27, commit pending). Every A2A record carries a `source` field (`"watcher"` / `"narrator"` / `"system"`) stamped at emission; `A2aQuery` now exposes `source` as a filter plus two convenience methods: `bySource(source, opts)` and `sourceBreakdown(filters)`. Lets retrospective queries answer "what fraction of today's alerts came from watchers vs the LLM?" — directly. 9 new tests cover exact match, composition with other filters, limit cap, invalid arg rejection, and breakdown aggregation.
+- [x] **Time-range query on a2aQuery** (shipped 2026-07-27, commit pending). `timeRange(filters)` returns `{ earliest, latest, spanMs, matched }` for any filter set — designed for dashboards that need to know "when did the last incident start?" or "how long has the vessel been in anomaly mode?" without scanning the log yourself. Streams the log once via the existing `_iterate` filter; memory stays bounded regardless of corpus size. 6 new tests cover empty log, single & multi-record spans, filter composition, and `spanMs=0` semantics. Every A2A record carries a `source` field (`"watcher"` / `"narrator"` / `"system"`) stamped at emission; `A2aQuery` now exposes `source` as a filter plus two convenience methods: `bySource(source, opts)` and `sourceBreakdown(filters)`. Lets retrospective queries answer "what fraction of today's alerts came from watchers vs the LLM?" — directly. 9 new tests cover exact match, composition with other filters, limit cap, invalid arg rejection, and breakdown aggregation.
 
 **Remaining Phase 7+ candidates, ranked by value-per-line:**
 
