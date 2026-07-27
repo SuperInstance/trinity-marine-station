@@ -87,6 +87,7 @@ function parseIsoMs(s) {
  *   {
  *     kind?:       "action" | "ack" | string   (exact match)
  *     action?:     string                     (exact match on rec.action)
+ *     source?:     "watcher" | "narrator" | "system" | string   (exact match on rec.source)
  *     since?:      ISO timestamp              (rec.ts >= since)
  *     until?:      ISO timestamp              (rec.ts <  until)
  *     minPriority?: number 0..1               (rec.priority >= min)
@@ -102,6 +103,7 @@ function recordMatches(rec, f) {
 
   if (f.kind !== undefined && rec.kind !== f.kind) return false;
   if (f.action !== undefined && rec.action !== f.action) return false;
+  if (f.source !== undefined && rec.source !== f.source) return false;
 
   if (f.since !== undefined) {
     const recTs = parseIsoMs(rec.ts);
@@ -277,6 +279,46 @@ class A2aQuery {
       .map(([key, count]) => ({ key, count }))
       .sort((a, b) => b.count - a.count);
     return sorted.slice(0, Math.max(0, limit));
+  }
+
+  /**
+   * Query records filtered by source provenance.
+   *
+   * Convenience for `query({ source, ...filters })`. The `source` field is
+   * stamped on every A2A record at emission:
+   *   - "watcher"   - fired by WatcherRegistry (deterministic predicates)
+   *   - "narrator"  - proposed by the LLM narrator
+   *   - "system"    - default; replayed or synthesised records
+   *
+   * @param {string}  source    Source string to match (exact, case-sensitive).
+   * @param {object}  [opts]
+   * @param {object}  [opts.filters]   Additional standard filter set
+   *                                    (e.g. { since, until, action }).
+   * @param {number}  [opts.limit]     Cap on returned records (0 = no cap).
+   * @returns {Promise<object[]>}
+   */
+  async bySource(source, { filters = {}, limit = 0 } = {}) {
+    if (typeof source !== "string" || !source) {
+      throw new Error("A2aQuery.bySource: source (non-empty string) is required");
+    }
+    if (filters && typeof filters !== "object" && !Array.isArray(filters)) {
+      throw new Error("A2aQuery.bySource: filters must be a plain object");
+    }
+    const results = await this.query({ ...filters, source });
+    return limit > 0 ? results.slice(0, limit) : results;
+  }
+
+  /**
+   * Distribution of records by `source` field.
+   *
+   * Returns a map { source -> count } across all matching records. Useful
+   * for "what fraction of today's alerts were watcher-fired vs LLM?".
+   *
+   * @param {object}  [filters]   Standard filter set (no source filter applied).
+   * @returns {Promise<Map<string, number>>}
+   */
+  async sourceBreakdown(filters = {}) {
+    return this.countBy({ field: "source", filters });
   }
 
   /**

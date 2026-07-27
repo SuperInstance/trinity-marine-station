@@ -545,4 +545,265 @@ run("a2aQuery", async () => {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
     }
   });
+
+  // -------------------------------------------------------------------------
+  // Source provenance filter (Phase 7+)
+  //
+  // Every A2A record carries a `source` field stamped at emission:
+  //   "watcher"   - fired by WatcherRegistry (deterministic predicates)
+  //   "narrator"  - proposed by the LLM narrator
+  //   "system"    - default; replayed or synthesised records
+  //
+  // The `source` filter on `query()` lets retrospective queries answer
+  // "what fraction of today's alerts came from watchers vs the LLM?".
+  // -------------------------------------------------------------------------
+
+  await test("recordMatches: source exact match", () => {
+    assert(recordMatches({ source: "watcher" },  { source: "watcher" }));
+    assert(recordMatches({ source: "narrator" }, { source: "narrator" }));
+    assert(recordMatches({ source: "system" },   { source: "system" }));
+    assert(!recordMatches({ source: "watcher" }, { source: "narrator" }));
+    // Record missing source field does not match a source filter.
+    assert(!recordMatches({}, { source: "watcher" }));
+    // Empty filter does not constrain source.
+    assert(recordMatches({ source: "watcher" }, {}));
+  });
+
+  await test("query: filters by source", async () => {
+    const dir = tmpDir();
+    try {
+      const baseMs = Date.parse("2026-07-25T12:00:00Z");
+      const records = [
+        { kind: "action", action: "raise_alert", priority: 0.9,
+          source: "watcher", ts: new Date(baseMs).toISOString() },
+        { kind: "action", action: "announce", priority: 0.5,
+          source: "narrator", ts: new Date(baseMs + 60_000).toISOString() },
+        { kind: "action", action: "clear_alerts", priority: 0.3,
+          source: "watcher", ts: new Date(baseMs + 120_000).toISOString() },
+        { kind: "action", action: "morph_to_hazard_mode", priority: 0.95,
+          source: "narrator", ts: new Date(baseMs + 180_000).toISOString() },
+        // Record without source (e.g. legacy pre-Phase-7 log line)
+        { kind: "action", action: "raise_alert", priority: 0.7,
+          ts: new Date(baseMs + 240_000).toISOString() },
+      ];
+      writeLog(dir, records, { mtimeMs: baseMs });
+      const q = new A2aQuery({ dir });
+
+      const watcherActions = await q.query({ source: "watcher" });
+      assertEq(watcherActions.length, 2);
+      assert(watcherActions.every((r) => r.source === "watcher"));
+
+      const narratorActions = await q.query({ source: "narrator" });
+      assertEq(narratorActions.length, 2);
+      assert(narratorActions.every((r) => r.source === "narrator"));
+
+      // No record has source "system" in this fixture; result is empty.
+      const systemActions = await q.query({ source: "system" });
+      assertEq(systemActions.length, 0);
+
+      // All 5 records are visible without source filter.
+      const all = await q.query();
+      assertEq(all.length, 5);
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  });
+
+  await test("query: source filter combines with other filters", async () => {
+    const dir = tmpDir();
+    try {
+      const baseMs = Date.parse("2026-07-25T12:00:00Z");
+      const records = [
+        { kind: "action", action: "raise_alert", priority: 0.9,
+          source: "watcher", ts: new Date(baseMs).toISOString() },
+        { kind: "action", action: "raise_alert", priority: 0.4,
+          source: "watcher", ts: new Date(baseMs + 60_000).toISOString() },
+        { kind: "action", action: "raise_alert", priority: 0.7,
+          source: "narrator", ts: new Date(baseMs + 120_000).toISOString() },
+      ];
+      writeLog(dir, records, { mtimeMs: baseMs });
+      const q = new A2aQuery({ dir });
+
+      // Watcher-fired raise_alerts with priority >= 0.5: 1 record.
+      const out = await q.query({
+        source: "watcher",
+        action: "raise_alert",
+        minPriority: 0.5,
+      });
+      assertEq(out.length, 1);
+      assertEq(out[0].priority, 0.9);
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  });
+
+  await test("bySource: returns only records with matching source", async () => {
+    const dir = tmpDir();
+    try {
+      const baseMs = Date.parse("2026-07-25T12:00:00Z");
+      const records = [
+        { kind: "action", action: "raise_alert", priority: 0.9,
+          source: "watcher", ts: new Date(baseMs).toISOString() },
+        { kind: "action", action: "announce", priority: 0.5,
+          source: "narrator", ts: new Date(baseMs + 60_000).toISOString() },
+        { kind: "action", action: "clear_alerts", priority: 0.3,
+          source: "watcher", ts: new Date(baseMs + 120_000).toISOString() },
+      ];
+      writeLog(dir, records, { mtimeMs: baseMs });
+      const q = new A2aQuery({ dir });
+
+      const watcherHits = await q.bySource("watcher");
+      assertEq(watcherHits.length, 2);
+      assert(watcherHits.every((r) => r.source === "watcher"));
+
+      const narratorHits = await q.bySource("narrator");
+      assertEq(narratorHits.length, 1);
+
+      // Unknown source -> empty result, not error.
+      const none = await q.bySource("nonexistent");
+      assertEq(none.length, 0);
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  });
+
+  await test("bySource: applies limit", async () => {
+    const dir = tmpDir();
+    try {
+      const baseMs = Date.parse("2026-07-25T12:00:00Z");
+      const records = [];
+      for (let i = 0; i < 5; i++) {
+        records.push({
+          kind: "action", action: "raise_alert", priority: 0.7,
+          source: "watcher", ts: new Date(baseMs + i * 60_000).toISOString(),
+        });
+      }
+      writeLog(dir, records, { mtimeMs: baseMs });
+      const q = new A2aQuery({ dir });
+
+      const one = await q.bySource("watcher", { limit: 1 });
+      assertEq(one.length, 1);
+
+      const three = await q.bySource("watcher", { limit: 3 });
+      assertEq(three.length, 3);
+
+      // limit: 0 means "no cap" — returns all 5.
+      const all = await q.bySource("watcher", { limit: 0 });
+      assertEq(all.length, 5);
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  });
+
+  await test("bySource: composes with additional filters", async () => {
+    const dir = tmpDir();
+    try {
+      const baseMs = Date.parse("2026-07-25T12:00:00Z");
+      const records = [
+        { kind: "action", action: "raise_alert", priority: 0.9,
+          source: "watcher", ts: new Date(baseMs).toISOString() },
+        { kind: "action", action: "announce", priority: 0.5,
+          source: "watcher", ts: new Date(baseMs + 60_000).toISOString() },
+        { kind: "action", action: "raise_alert", priority: 0.7,
+          source: "watcher", ts: new Date(baseMs + 120_000).toISOString() },
+        { kind: "action", action: "raise_alert", priority: 0.4,
+          source: "narrator", ts: new Date(baseMs + 180_000).toISOString() },
+      ];
+      writeLog(dir, records, { mtimeMs: baseMs });
+      const q = new A2aQuery({ dir });
+
+      const watcherRaise = await q.bySource("watcher", {
+        filters: { action: "raise_alert" },
+      });
+      assertEq(watcherRaise.length, 2);
+      assert(watcherRaise.every(
+        (r) => r.source === "watcher" && r.action === "raise_alert"
+      ));
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  });
+
+  await test("bySource: rejects invalid source arg", async () => {
+    const dir = tmpDir();
+    try {
+      const q = new A2aQuery({ dir });
+      let threw = false;
+      try { await q.bySource(""); } catch (_) { threw = true; }
+      assert(threw);
+      threw = false;
+      try { await q.bySource(null); } catch (_) { threw = true; }
+      assert(threw);
+      threw = false;
+      try { await q.bySource(undefined); } catch (_) { threw = true; }
+      assert(threw);
+      threw = false;
+      try { await q.bySource(42); } catch (_) { threw = true; }
+      assert(threw);
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  });
+
+  await test("sourceBreakdown: returns Map of source -> count", async () => {
+    const dir = tmpDir();
+    try {
+      const baseMs = Date.parse("2026-07-25T12:00:00Z");
+      const records = [
+        { kind: "action", action: "raise_alert", priority: 0.9,
+          source: "watcher", ts: new Date(baseMs).toISOString() },
+        { kind: "action", action: "raise_alert", priority: 0.7,
+          source: "watcher", ts: new Date(baseMs + 60_000).toISOString() },
+        { kind: "action", action: "announce", priority: 0.5,
+          source: "narrator", ts: new Date(baseMs + 120_000).toISOString() },
+        { kind: "action", action: "morph_to_hazard_mode", priority: 0.95,
+          source: "narrator", ts: new Date(baseMs + 180_000).toISOString() },
+        { kind: "action", action: "log_only", priority: 0.1,
+          source: "system", ts: new Date(baseMs + 240_000).toISOString() },
+        // Legacy record missing source: silently skipped by countBy
+        // (records without the field are NOT bucketed under "unknown").
+        { kind: "action", action: "raise_alert", priority: 0.5,
+          ts: new Date(baseMs + 300_000).toISOString() },
+      ];
+      writeLog(dir, records, { mtimeMs: baseMs });
+      const q = new A2aQuery({ dir });
+
+      const breakdown = await q.sourceBreakdown();
+      assertEq(breakdown.get("watcher"), 2);
+      assertEq(breakdown.get("narrator"), 2);
+      assertEq(breakdown.get("system"), 1);
+      // 5 records had `source` set; the 6th (legacy) is dropped.
+      assertEq(breakdown.size, 3);
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  });
+
+  await test("sourceBreakdown: respects filters (e.g. last hour only)", async () => {
+    const dir = tmpDir();
+    try {
+      const baseMs = Date.parse("2026-07-25T12:00:00Z");
+      const records = [
+        // Outside the window
+        { kind: "action", action: "raise_alert", priority: 0.9,
+          source: "watcher", ts: new Date(baseMs).toISOString() },
+        // Inside the window
+        { kind: "action", action: "raise_alert", priority: 0.9,
+          source: "watcher", ts: new Date(baseMs + 60_000).toISOString() },
+        { kind: "action", action: "announce", priority: 0.5,
+          source: "narrator", ts: new Date(baseMs + 120_000).toISOString() },
+      ];
+      writeLog(dir, records, { mtimeMs: baseMs });
+      const q = new A2aQuery({ dir });
+
+      // Window starts after the first record.
+      const breakdown = await q.sourceBreakdown({
+        since: new Date(baseMs + 30_000).toISOString(),
+      });
+      assertEq(breakdown.get("watcher"), 1);
+      assertEq(breakdown.get("narrator"), 1);
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  });
 });

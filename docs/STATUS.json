@@ -3,7 +3,7 @@
   "$id": "https://github.com/SuperInstance/trinity-marine-station/blob/main/docs/STATUS.json",
   "title": "Trinity Marine Station - Project Status Manifest",
   "description": "Agentic-first marine navigation station. Real-time ingestion of vessel telemetry, JEPA-style anomaly detection, local LLM narration, and a WebSocket A2A bridge to a future Eclipse Theia workspace.",
-  "generated_at": "2026-07-27T00:40:00.000Z",
+  "generated_at": "2026-07-27T01:15:59.420Z",
   "_comment": "Update 'generated_at' whenever this file is edited. Update 'commit' to the latest shipped commit hash (HEAD on main, when working tree is clean).",
   "name": "trinity-marine-station",
   "display_name": "Trinity Marine Station",
@@ -15,7 +15,7 @@
     "role": "L0/L1 data capture (NMEA, acoustic, catch); upstream of Trinity's L2 cognitive layer"
   },
   "license": "private (no license declared yet)",
-  "commit": "5d4f5907d23ccf1f11e409a67a8b714e32014b68",
+  "commit": "66539a6919450422ae39686ec5424b364579f920",
   "branch": "main",
   "node_version_required": ">=18.0.0",
   "language": "JavaScript (Node.js, plain JS with JSDoc; no build step)",
@@ -215,8 +215,8 @@
       "purpose": "Append-only JSONL audit log. Batched writes, rotation, replay, persistence, ack checkpointing."
     },
     "backend/a2aQuery.js": {
-      "lines": 363,
-      "phase": "6",
+      "lines": 405,
+      "phase": "7+",
       "exports": [
         "A2aQuery",
         "recordMatches",
@@ -229,8 +229,8 @@
         "path"
       ],
       "test_file": "tests/a2aQuery.test.js",
-      "tests": 38,
-      "purpose": "Read-side query layer over A2aLog JSONL files. Pure-JS streaming filter, countBy/topBy, time-bucketing, summary. No native deps."
+      "tests": 47,
+      "purpose": "Read-side query layer over A2aLog JSONL files. Pure-JS streaming filter, countBy/topBy, time-bucketing, summary. Plus source-provenance filter (`source` field, `bySource()`, `sourceBreakdown()`) added Phase 7+."
     },
     "backend/watchers.js": {
       "lines": 440,
@@ -664,7 +664,7 @@
         "file": "tests/a2aQuery.test.js",
         "assertions": 38,
         "covers": "read-side query layer (filters, countBy, topBy, bucketBy, summary)",
-        "lines": 548
+        "lines": 809
       },
       {
         "file": "tests/watchers.test.js",
@@ -682,13 +682,13 @@
         "file": "tests/watcherHistory.test.js",
         "assertions": 33,
         "covers": "WatcherHistory state machine (cooldown, payload dedup, record/markSuppressed, stats)",
-        "lines": 410
+        "lines": 314
       },
       {
         "file": "tests/watchersWithHistory.test.js",
         "assertions": 16,
         "covers": "WatcherRegistry integration with WatcherHistory (backward compat, cooldown behavior, error isolation)",
-        "lines": 380
+        "lines": 292
       },
       {
         "file": "tests/circuitBreaker.test.js",
