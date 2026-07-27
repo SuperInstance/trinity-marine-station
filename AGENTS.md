@@ -75,7 +75,8 @@ Approximate total tests: ~3,950 lines across 18 files.
 | `backend/a2aClient.js`     | 457 | Typed WS client. Auto-reconnect, manual replay, destroy. |
 | `backend/a2aQuery.js`      | 281 | Read-side query layer over the JSONL action log. Pure JS, no native deps. Filters, countBy/topBy, time-bucket, summary. |
 
-| `backend/watchers.js`      | 340 | Deterministic A2A rule engine (Phase 7). Pure-function predicates over `FeatureVector`; fires A2A actions through trinityCore's `a2a` event so the LLM is informed rather than bypassed. Inspired by AELMA 'Watcher NPCs' pattern (docs/AELMA_SYNTHESIS.md). |
+| `backend/watchers.js`      | 440 | Deterministic A2A rule engine (Phase 7). Pure-function predicates over `FeatureVector`; fires A2A actions through trinityCore's `a2a` event so the LLM is informed rather than bypassed. Optional `WatcherHistory` integration for cooldown + payload dedup. Inspired by AELMA 'Watcher NPCs' pattern (docs/AELMA_SYNTHESIS.md). |
+| `backend/watcherHistory.js` | 293 | Per-rule suppression layer. shouldFire(rid, now) checks both cooldown (ms) and canonical payload-key dedup; record() / markSuppressed() update per-rule stats. Pure in-memory state, no IO, safe for the 500ms tick loop. Stats exposed via getStats(). |
 | `backend/schemas.js`       | 429 | Validators for every wire shape. Add new shapes here. |
 | `backend/telemetryIngest.js` | 323 | WebSocket consumer. Hello handshake, exponential backoff, frame parsing. |
 | `backend/a2aLog.js`        | 307 | Append-only JSONL audit log. Batched writes, rotation, replay. |
@@ -91,6 +92,8 @@ Approximate total tests: ~3,950 lines across 18 files.
 
 | `tests/watchers.test.js`    | 470 | 47 cases. Pure-registry behavior: registration, evaluation, error isolation, validation. |
 
+| `tests/watcherHistory.test.js` | 410 | 33 cases. WatcherHistory state machine: cooldown, payload dedup, record/markSuppressed, stats, arg validation. |
+| `tests/watchersWithHistory.test.js` | 380 | 16 cases. WatcherRegistry + WatcherHistory integration: backward compat, cooldown behavior, reg.stats, error isolation. |
 | `tests/trinityCoreWatchers.test.js` | 290 | 11 cases. Integration: registry -> core -> a2a event. Verifies source='watcher' stamp + LLM-notification design. |
 | `backend/trinityLifecycle.test.js` | 274 | 9 cases + live WS smoke. |
 | `backend/pipeline.test.js`  | 264 | 11 cases (streamer + ingest + ring buffer). |
@@ -258,6 +261,7 @@ time, so memory stays bounded by line length, not file size.
 | A new test suite | Drop `*.test.js` in `tests/` — auto-discovered |
 | A new query filter / aggregation | `backend/a2aQuery.js` (`recordMatches`, `query`, `countBy`, `topBy`, `bucketBy`, `summary`) |
 | A new deterministic A2A rule | `backend/watchers.js` (add to a `WatcherRegistry`); the daemon installs `buildDefaultWatchers()` so rules fire before the LLM. Watcher-fired actions are stamped with `source: "watcher"`. |
+| A new suppression policy for watchers | `backend/watcherHistory.js` (cooldown + payload dedup). Pass `{ history }` to the registry constructor to enable. Defaults: cooldownMs=0 (off), dedupPayloads=true. |
 
 ---
 
@@ -296,7 +300,9 @@ time, so memory stays bounded by line length, not file size.
 
 **Phase 7 progress:**
 
-- [x] **Deterministic Watcher Rules** (AELMA-inspired, shipped this round). `backend/watchers.js` provides a `WatcherRegistry` where each rule has a `when(frame)` predicate + an `action` template. The daemon installs 3 defaults (`shallow-water`, `heading-off-course`, `speed-anomaly`) in `buildDefaultWatchers()`. Watchers fire BEFORE the LLM is consulted, but the resulting A2A actions are routed through `trinityCore`'s existing `'a2a'` event so they share persistence + broadcast + LLM-notification. The LLM is informed, not bypassed. 47 pure-registry tests + 11 integration tests pin the design. Toggle with `WATCHERS_DISABLED=1`.
+- [x] **Deterministic Watcher Rules** (AELMA-inspired, shipped 2026-07-26, commit `c1e10a4`). `backend/watchers.js` provides a `WatcherRegistry` where each rule has a `when(frame)` predicate + an `action` template. The daemon installs 3 defaults (`shallow-water`, `heading-off-course`, `speed-anomaly`) in `buildDefaultWatchers()`. Watchers fire BEFORE the LLM is consulted, but the resulting A2A actions are routed through `trinityCore`'s existing `'a2a'` event so they share persistence + broadcast + LLM-notification. The LLM is informed, not bypassed. 47 pure-registry tests + 11 integration tests pin the design. Toggle with `WATCHERS_DISABLED=1`.
+- [x] **A2A action parameter schemas** (shipped 2026-07-26, commit `390fb2c`). `ACTION_PAYLOAD_SCHEMAS` in `backend/schemas.js` is the single source of truth for per-action payload shape. `tools/regenSchema.js` regenerates `docs/a2a/SCHEMA.json` from it. 12 new schema tests + ollama smoke fix.
+- [x] **Watcher history (cooldown + payload dedup)** (shipped 2026-07-27, commit `5d4f590`). `backend/watcherHistory.js` is a per-rule suppression layer that prevents alert flooding when a steady-state condition keeps a watcher predicate true on every tick. The `WatcherRegistry` now consults history inside `evaluate()`; suppressed fires emit no `'fired'` event but DO increment suppress counters (visible in `/status`). 33 unit + 16 integration tests cover cooldown math, payload-key dedup, per-rule isolation, error isolation, and `reg.stats` exposure.
 
 **Remaining Phase 7+ candidates, ranked by value-per-line:**
 
@@ -304,8 +310,7 @@ time, so memory stays bounded by line length, not file size.
 2. **Real vessel-agent -> WS bridge** (Python, ships in `vessel-agent`). ~80 LOC. Just publishes the trinity delta format at `ws://localhost:3000`. **Cross-repo.**
 3. **`predict(counterfactual)` on JEPA world model** ("Divination" from AELMA). Returns the expected trajectory delta for a hypothetical action without committing. ~200 LOC. **In-repo but research-flavored** — a 200-LOC first cut would be either trivial or wrong; recommend planning round first.
 4. **Spatial layer (scene graph of physical components)**. Zone-based query API for spatial relationships ("engine room + 1.2ft from hydraulic line"). ~300 LOC. No new deps; `h3` already shipped. **In-repo architectural commitment.**
-5. **A2A action parameter schemas** + LLM tool-calling integration. Each allowed action gets a `parameters` block; narrator emits structured function calls instead of plain-text `<a2a>` blocks. ~250 LOC. **In-repo.**
-6. **`h3-js` integration** for production-grade H3 (current is a quantized-grid approximation). Drop-in replacement of `backend/h3.js`. ~50 LOC. **In-repo.**
+5. **`h3-js` integration** for production-grade H3 (current is a quantized-grid approximation). Drop-in replacement of `backend/h3.js`. ~50 LOC. **In-repo.**
 
 If you are a future agent and need to pick one: **#1 (Theia extension)** closes the cognitive loop most — the repo currently "talks to itself", the bridge fans out, but no UI listens. Theia is where the operator (captain) finally sees the system. **#5 (A2A parameter schemas)** is the highest-leverage purely-in-repo pick because it unlocks structured narrator -> watcher hand-off.
 
