@@ -85,8 +85,20 @@
  *
  *   const actions = reg.evaluate(frame);
  *   for (const a of actions) core.emit("a2a", a);
- * ----------------------------------------------------------------------------
- */
+ *
+ *   // ---- With suppression history ----
+ *   const hist = new WatcherHistory();
+ *   const reg2 = new WatcherRegistry({ history: hist });
+ *   reg2.add({
+ *     id: "shallow-water",
+ *     name: "Shallow water warning",
+ *     cooldownMs: 30000,           // suppress duplicates for 30s
+ *     when: (f) => f.depth > 0 && f.depth < 2.0,
+ *     action: { name: "raise_alert", priority: () => 0.85 },
+ *   });
+ *   reg2.evaluate(frame);          // fires
+ *   reg2.evaluate(frame);          // suppressed (cooldown-active)
+ * --------------------------------------------------------------------------- */
 
 "use strict";
 
@@ -99,6 +111,13 @@ const { validateA2AAction } = require("./schemas");
  * full-blown emergency. Watchers that want to dominate should override.
  */
 const DEFAULT_PRIORITY = 0.5;
+
+/**
+ * Default cooldown (ms) when a rule omits one. Zero means "fire every time
+ * the predicate matches" — i.e. no suppression. The daemon's default rules
+ * override this (30s for shallow-water, 60s for heading-off-course, etc.).
+ */
+const DEFAULT_COOLDOWN_MS = 0;
 
 /**
  * WatcherRegistry
@@ -123,14 +142,40 @@ const DEFAULT_PRIORITY = 0.5;
  */
 class WatcherRegistry extends EventEmitter {
   /**
-   * @param {object} [opts]
+   * @param {object}  [opts]
    * @param {boolean} [opts.verbose=false]   Log rule firings to stderr when true.
+   * @param {object}  [opts.history]         Optional WatcherHistory instance.
+   *   When supplied, every rule's `cooldownMs` is consulted before the
+   *   action is emitted, suppressing duplicates within the cooldown window
+   *   and identical payloads (when the history has dedupPayloads enabled).
+   *   Rules with no cooldownMs or with cooldownMs=0 are unaffected.
+   *   See `backend/watcherHistory.js` for the suppression contract.
+   * @param {() => number} [opts.now]        Optional clock function (returns
+   *   epoch ms). Defaults to `Date.now`. Tests inject a fixed clock so the
+   *   cooldown behaviour is deterministic.
    */
   constructor(opts = {}) {
     super();
     this.verbose = Boolean(opts.verbose);
     /** @type {Map<string, NormalisedWatcherRule>} */
     this._rules = new Map();
+    /** Optional history (per-rule suppression state). May be null. */
+    this._history = opts.history ?? null;
+    /** Optional clock function. Defaults to Date.now. */
+    this._now = typeof opts.now === "function" ? opts.now : null;
+  }
+
+  /**
+   * Per-rule + aggregate stats, suitable for /status snapshots.
+   * When no history is attached, historyStats is null.
+   * @returns {{ ruleCount: number, rules: object[], historyStats: object | null }}
+   */
+  get stats() {
+    return {
+      ruleCount: this._rules.size,
+      rules: this.list(),
+      historyStats: this._history ? this._history.getStats() : null,
+    };
   }
 
   /**
@@ -187,6 +232,12 @@ class WatcherRegistry extends EventEmitter {
   /**
    * Evaluate all rules against a frame.
    *
+   * Suppression: if the registry was constructed with a `history` instance
+   * and the matched rule has `cooldownMs > 0` (or the history's
+   * `dedupPayloads` is on), the rule's `shouldFire()` is consulted first.
+   * Suppressed rules are dropped (counted in history stats) but do not
+   * abort evaluation of other rules.
+   *
    * @param {FeatureVector} frame
    * @returns {Array<A2AAction>}  validated actions, in registration order
    */
@@ -194,6 +245,7 @@ class WatcherRegistry extends EventEmitter {
     if (frame == null || typeof frame !== "object") {
       throw new TypeError("WatcherRegistry.evaluate: frame must be an object");
     }
+    const now = this._now ? this._now() : Date.now();
     const fired = [];
     for (const rule of this._rules.values()) {
       let matched = false;
@@ -204,6 +256,32 @@ class WatcherRegistry extends EventEmitter {
         continue;
       }
       if (!matched) continue;
+
+      // History check: ask the registered history whether this rule should
+      // be allowed to fire *right now*. A return of {ok: false, reason} means
+      // the rule is suppressed and we should NOT call record() (no state
+      // change). When no history is attached, the check is skipped and the
+      // rule fires unconditionally.
+      if (this._history) {
+        let decision;
+        try {
+          decision = this._history.shouldFire(rule.id, now, rule.cooldownMs, undefined);
+        } catch (err) {
+          this.emit("error", err, { ruleId: rule.id, ruleName: rule.name, stage: "history-decide" });
+          continue;
+        }
+        if (!decision.ok) {
+          try {
+            this._history.markSuppressed(rule.id, decision.reason);
+          } catch (err) {
+            this.emit("error", err, { ruleId: rule.id, ruleName: rule.name, stage: "history-mark" });
+          }
+          if (this.verbose) {
+            console.error(`[watcher] ${rule.id} (${rule.name}) SUPPRESSED (${decision.reason})`);
+          }
+          continue;
+        }
+      }
 
       let payload = {};
       let reason = "";
@@ -242,6 +320,15 @@ class WatcherRegistry extends EventEmitter {
         // respected and operators still see the line in their terminal.
         console.error(`[watcher] ${rule.id} (${rule.name}) -> ${v.value.action} p=${v.value.priority}`);
       }
+      // Record the successful fire so the next call within cooldownMs is
+      // suppressed. Failures here must not crash evaluation.
+      if (this._history) {
+        try {
+          this._history.record(rule.id, now, v.value.payload, v.value.priority);
+        } catch (err) {
+          this.emit("error", err, { ruleId: rule.id, ruleName: rule.name, stage: "history-record" });
+        }
+      }
     }
     return fired;
   }
@@ -279,6 +366,9 @@ class WatcherRegistry extends EventEmitter {
  * @property {null | ((frame: FeatureVector) => Object)} action.payloadFn
  * @property {null | ((frame: FeatureVector) => string)} action.reasonFn
  * @property {null | ((frame: FeatureVector) => number)} action.priorityFn
+ * @property {number} cooldownMs
+ *   0 = no suppression. If a `history` is attached to the registry, the
+ *   rule will be skipped for this many ms after a successful fire.
  */
 
 function _normaliseRule(rule) {
@@ -306,10 +396,18 @@ function _normaliseRule(rule) {
   // Reject obviously-invalid action names early; validateA2AAction will
   // also catch this on every fire, but failing fast gives clearer errors.
   const a = rule.action;
+  let cooldownMs = DEFAULT_COOLDOWN_MS;
+  if (rule.cooldownMs !== undefined) {
+    if (typeof rule.cooldownMs !== "number" || !Number.isFinite(rule.cooldownMs) || rule.cooldownMs < 0) {
+      throw new TypeError("watcher rule.cooldownMs must be a finite, non-negative number");
+    }
+    cooldownMs = rule.cooldownMs;
+  }
   return {
     id: rule.id,
     name: rule.name,
     when: rule.when,
+    cooldownMs,
     action: {
       name: a.name,
       payloadFn:  typeof a.payload  === "function" ? a.payload  : null,
@@ -324,6 +422,7 @@ function _denormaliseRule(n) {
     id: n.id,
     name: n.name,
     when: n.when,
+    cooldownMs: n.cooldownMs,
     action: {
       name: n.action.name,
       payload:  n.action.payloadFn  || ((_f) => ({})),
@@ -336,4 +435,5 @@ function _denormaliseRule(n) {
 module.exports = {
   WatcherRegistry,
   DEFAULT_PRIORITY,
+  DEFAULT_COOLDOWN_MS,
 };

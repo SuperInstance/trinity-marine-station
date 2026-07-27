@@ -71,6 +71,9 @@ const {
   WatcherRegistry,
 } = require("./watchers");
 const {
+  WatcherHistory,
+} = require("./watcherHistory");
+const {
   STREAMER_HOST,
   STREAMER_PORT,
 } = require("./marineConstants");
@@ -220,10 +223,16 @@ function stopStreamer() {
 // docs/AELMA_SYNTHESIS.md for the design rationale.
 // ===========================================================================
 function buildDefaultWatchers() {
-  const reg = new WatcherRegistry();
+  // Shared suppression state. Per-rule cooldowns are declared on each rule
+  // below; this history is the single accumulator that records when each
+  // rule last fired and rejects duplicates within its window. See
+  // backend/watcherHistory.js for the suppression contract.
+  const history = new WatcherHistory();
+  const reg = new WatcherRegistry({ history });
   reg.add({
     id: "shallow-water",
     name: "Shallow water warning",
+    cooldownMs: 30_000,         // suppress repeats for 30s
     when: (f) => f && f.depth != null && f.depth < 2.0,
     action: {
       name: "raise_alert",
@@ -235,6 +244,7 @@ function buildDefaultWatchers() {
   reg.add({
     id: "heading-off-course",
     name: "Heading deviates from expected range",
+    cooldownMs: 60_000,         // suppress repeats for 60s
     when: (f) => f && f.headingTrue != null && (f.headingTrue < 10 || f.headingTrue > 350),
     action: {
       name: "highlight_waypoint",
@@ -246,6 +256,7 @@ function buildDefaultWatchers() {
   reg.add({
     id: "speed-anomaly",
     name: "Unusual speed (likely a stale or lost sensor)",
+    cooldownMs: 45_000,         // suppress repeats for 45s
     when: (f) => f && f.speedOverGround != null && f.speedOverGround > 30,
     action: {
       name: "announce",
@@ -254,6 +265,9 @@ function buildDefaultWatchers() {
       priority: () => 0.7,
     },
   });
+  // Expose the history on the registry so the /status snapshot can show
+  // suppression rates without re-walking the rule list.
+  reg._history = history;
   return reg;
 }
 
@@ -473,7 +487,11 @@ async function buildTrinity(cfg) {
       core:     core.stats,
       retriever: { size: retriever.size },
       watchers: watchers
-        ? { ruleCount: watchers.size, rules: watchers.list() }
+        ? {
+            ruleCount: watchers.size,
+            rules: watchers.list(),
+            history: watchers.stats.historyStats,
+          }
         : { disabled: true },
       a2aLog:   a2aLog ? a2aLog.stats() : { disabled: true },
       a2aBridge: a2aBridge
