@@ -140,7 +140,15 @@ Ranked by value-per-line:
    `tools/regenSchema.js`. Each of the 8 allowed actions now has a declared
    payload shape (fields, types, defaults). `validateA2AAction` enforces it
    at every boundary. 12 new tests in `tests/schemas.test.js`.
-1. **Watcher history** — remember which rules fired in the last N seconds and suppress duplicate alerts. ~80 LOC.
+1. ✅ **Watcher history** — SHIPPED in commit `5d4f590`. `backend/watcherHistory.js`
+   provides per-rule cooldown (ms-based) and payload-key dedup. The
+   `WatcherRegistry` now consults history inside `evaluate()`; suppressed
+   fires emit no `'fired'` event but DO increment the suppress counter
+   (visible in `/status`). Default daemon rules ship with sensible cooldowns:
+   shallow-water=30s, heading-off-course=60s, speed-anomaly=0s. 33 unit tests
+   in `tests/watcherHistory.test.js` + 16 integration tests in
+   `tests/watchersWithHistory.test.js`. The history is a pure in-memory
+   object — no IO, no persistence, safe for the 500ms tick loop.
 2. **`predict(counterfactual)` on JEPA world model** ("Divination" from AELMA). ~200 LOC. Research-flavored — see `docs/AELMA_SYNTHESIS.md` for the prior discussion.
 
 ## 9. Cross-references

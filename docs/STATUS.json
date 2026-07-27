@@ -3,7 +3,7 @@
   "$id": "https://github.com/SuperInstance/trinity-marine-station/blob/main/docs/STATUS.json",
   "title": "Trinity Marine Station - Project Status Manifest",
   "description": "Agentic-first marine navigation station. Real-time ingestion of vessel telemetry, JEPA-style anomaly detection, local LLM narration, and a WebSocket A2A bridge to a future Eclipse Theia workspace.",
-  "generated_at": "2026-07-26T23:55:00.000Z",
+  "generated_at": "2026-07-27T00:40:00.000Z",
   "_comment": "Update 'generated_at' whenever this file is edited. Update 'commit' to the latest shipped commit hash (HEAD on main, when working tree is clean).",
   "name": "trinity-marine-station",
   "display_name": "Trinity Marine Station",
@@ -15,7 +15,7 @@
     "role": "L0/L1 data capture (NMEA, acoustic, catch); upstream of Trinity's L2 cognitive layer"
   },
   "license": "private (no license declared yet)",
-  "commit": "390fb2cf149d4ccf8ab9521e8366930d115f6068",
+  "commit": "5d4f5907d23ccf1f11e409a67a8b714e32014b68",
   "branch": "main",
   "node_version_required": ">=18.0.0",
   "language": "JavaScript (Node.js, plain JS with JSDoc; no build step)",
@@ -122,10 +122,11 @@
       "status": "complete",
       "shipped": "2026-07-26",
       "modules": [
-        "backend/watchers.js"
+        "backend/watchers.js",
+        "backend/watcherHistory.js"
       ],
-      "rationale": "Borrowed from AELMA 'Watcher NPCs' pattern. Threshold-based deterministic predicates over FeatureVector frames emit A2A actions BEFORE the LLM is consulted, so time-critical alerts (shallow water, heading drift, sensor faults) are not delayed by an LLM round-trip. Watcher-fired actions are routed through trinityCore's existing 'a2a' event so they share the same persistence + broadcast + LLM-notification path as narrator-issued actions (the LLM is informed, not bypassed).",
-      "see_also": "docs/AELMA_SYNTHESIS.md, backend/watchers.js, tests/watchers.test.js, tests/trinityCoreWatchers.test.js"
+      "rationale": "Borrowed from AELMA 'Watcher NPCs' pattern. Threshold-based deterministic predicates over FeatureVector frames emit A2A actions BEFORE the LLM is consulted, so time-critical alerts (shallow water, heading drift, sensor faults) are not delayed by an LLM round-trip. Watcher-fired actions are routed through trinityCore's existing 'a2a' event so they share the same persistence + broadcast + LLM-notification path as narrator-issued actions (the LLM is informed, not bypassed). WatcherHistory adds per-rule cooldown + payload dedup so steady-state conditions do not flood the log/narrator/bridge.",
+      "see_also": "docs/AELMA_SYNTHESIS.md, docs/PHASE7.md, backend/watchers.js, backend/watcherHistory.js, tests/watchers.test.js, tests/trinityCoreWatchers.test.js, tests/watcherHistory.test.js, tests/watchersWithHistory.test.js"
     },
     "3.5": {
       "title": "Daemon, Vector Store, Cloud Backend",
@@ -232,20 +233,34 @@
       "purpose": "Read-side query layer over A2aLog JSONL files. Pure-JS streaming filter, countBy/topBy, time-bucketing, summary. No native deps."
     },
     "backend/watchers.js": {
-      "lines": 340,
+      "lines": 440,
       "phase": 7,
       "exports": [
         "WatcherRegistry"
       ],
       "deps_internal": [
-        "shared/types.js"
+        "shared/types.js",
+        "backend/watcherHistory.js"
       ],
       "deps_external": [
         "events"
       ],
       "test_file": "tests/watchers.test.js",
       "tests": 47,
-      "purpose": "Deterministic A2A rule engine. Pure-function predicates over FeatureVector frames. Watcher-fired actions are routed through trinityCore's 'a2a' event so they share the same persistence + broadcast + LLM-notification path as narrator-issued actions (LLM is informed, not bypassed). Inspired by AELMA 'Watcher NPCs' pattern."
+      "purpose": "Deterministic A2A rule engine. Pure-function predicates over FeatureVector frames. Watcher-fired actions are routed through trinityCore's 'a2a' event so they share the same persistence + broadcast + LLM-notification path as narrator-issued actions (LLM is informed, not bypassed). Inspired by AELMA 'Watcher NPCs' pattern. Optional WatcherHistory (per-rule cooldown + payload dedup) prevents alert flood in steady-state conditions."
+    },
+    "backend/watcherHistory.js": {
+      "lines": 293,
+      "phase": "7+",
+      "exports": [
+        "WatcherHistory"
+      ],
+      "deps_external": [
+        "events"
+      ],
+      "test_file": "tests/watcherHistory.test.js",
+      "tests": 33,
+      "purpose": "Per-rule suppression layer for WatcherRegistry. shouldFire() checks both cooldown (ms) and payload-key dedup; record() marks successful fires; markSuppressed() increments per-rule counters. Pure in-memory state, no IO, safe for the 500ms tick loop. Stats exposed via getStats(); aggregate counters in trackCounts."
     },
     "backend/vesselAgentAdapter.js": {
       "lines": 271,
@@ -264,7 +279,7 @@
       "purpose": "Anti-corruption layer. Normalizes Signal K deltas and vessel-agent core_anchor JSON into canonical TrinityFrame."
     },
     "backend/trinityDaemon.js": {
-      "lines": 605,
+      "lines": 623,
       "phase": 3.5,
       "exports": [
         "startDaemon",
@@ -606,8 +621,8 @@
     }
   },
   "tests": {
-    "total_suites": 14,
-    "total_assertions_approx": 357,
+    "total_suites": 19,
+    "total_assertions_approx": 405,
     "suites": [
       {
         "file": "tests/pipeline.test.js",
@@ -662,6 +677,18 @@
         "assertions": 11,
         "covers": "watchers wired into trinityCore 'a2a' event (Phase 7 integration)",
         "lines": 328
+      },
+      {
+        "file": "tests/watcherHistory.test.js",
+        "assertions": 33,
+        "covers": "WatcherHistory state machine (cooldown, payload dedup, record/markSuppressed, stats)",
+        "lines": 410
+      },
+      {
+        "file": "tests/watchersWithHistory.test.js",
+        "assertions": 16,
+        "covers": "WatcherRegistry integration with WatcherHistory (backward compat, cooldown behavior, error isolation)",
+        "lines": 380
       },
       {
         "file": "tests/circuitBreaker.test.js",
@@ -913,6 +940,23 @@
       ],
       "shipped_tests": "12 new in tests/schemas.test.js (48 total)",
       "shipped_persistence_note": "Single source of truth: ACTION_PAYLOAD_SCHEMAS. docs/a2a/SCHEMA.json is regenerated by tools/regenSchema.js. validateA2AAction now enforces payload shape at every boundary. Idempotent (feeding validator output back through is a no-op) so watcher path remains clean."
+    },
+    {
+      "title": "Watcher history (cooldown + payload dedup)",
+      "value": "medium",
+      "why": "Per-rule suppression so steady-state conditions don't flood the log/narrator/bridge. ~80 LOC.",
+      "blocks": "alert flood control for watchers",
+      "source": "docs/AELMA_SYNTHESIS.md (AELMA 'Watcher NPCs' cooldown pattern)",
+      "status": "shipped",
+      "shipped_in_commit": "5d4f590",
+      "shipped_on": "2026-07-27",
+      "shipped_modules": [
+        "backend/watcherHistory.js",
+        "backend/watchers.js (registry now consults history)",
+        "backend/trinityDaemon.js (default rules ship with cooldowns)"
+      ],
+      "shipped_tests": "33 in watcherHistory + 16 in watchersWithHistory",
+      "shipped_persistence_note": "Pure in-memory state; no IO. Cooldown defaults: shallow-water=30s, heading-off-course=60s, speed-anomaly=0s (off). reg.stats exposes historyStats; /status surfaces it. Per-rule try/catch isolates history errors so a broken history does not stop other rules."
     },
     {
       "title": "Replay UI primitives",
