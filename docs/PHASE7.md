@@ -134,9 +134,14 @@ git diff docs/STATUS.json  # should show your new line counts only
 
 Ranked by value-per-line:
 
-1. **A2A action parameter schemas** (`docs/PHASE7.md` §4 is a good spec sketch). Each allowed action gets a `parameters` block; narrator emits structured tool calls instead of plain-text `<a2a>` blocks. ~250 LOC, in-repo.
-2. **Watcher history** — remember which rules fired in the last N seconds and suppress duplicate alerts. ~80 LOC.
-3. **`predict(counterfactual)` on JEPA world model** ("Divination" from AELMA). ~200 LOC. Research-flavored — see `docs/AELMA_SYNTHESIS.md` for the prior discussion.
+0. ✅ **A2A action parameter schemas** — SHIPPED in commit `390fb2c`.
+   `ACTION_PAYLOAD_SCHEMAS` in `backend/schemas.js` is the single source of
+   truth; `docs/a2a/SCHEMA.json` is regenerated from it by
+   `tools/regenSchema.js`. Each of the 8 allowed actions now has a declared
+   payload shape (fields, types, defaults). `validateA2AAction` enforces it
+   at every boundary. 12 new tests in `tests/schemas.test.js`.
+1. **Watcher history** — remember which rules fired in the last N seconds and suppress duplicate alerts. ~80 LOC.
+2. **`predict(counterfactual)` on JEPA world model** ("Divination" from AELMA). ~200 LOC. Research-flavored — see `docs/AELMA_SYNTHESIS.md` for the prior discussion.
 
 ## 9. Cross-references
 
